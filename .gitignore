@@ -1,0 +1,35 @@
+# binaries / build
+bin/
+dist/
+*.exe
+*.test
+coverage.out
+
+# runtime data
+data/
+logs/
+.env
+tmp/
+tmp/gocache/
+tmp/smoke-data*/
+tmp/server-smoke.exe
+tmp/server-smoke.*.log
+tmp/server-smoke*.log
+tmp/batch_smoke_response*.json
+.gocache/
+
+# local agent configuration and machine reports
+.agents/
+system-power-report.html
+
+# local media and generated assets
+media/
+
+# smoke-generated responses, intermediate artifacts, and temporary JSON
+smoke/*.json
+smoke/**/*.json
+!smoke/batch_products_request.json
+
+# editor
+.vscode/
+.idea/

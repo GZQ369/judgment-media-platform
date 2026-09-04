@@ -1,0 +1,41 @@
+{
+  "name": "三商品小红书批量发布包",
+  "platform": "xiaohongshu",
+  "template": "xiaohongshu_product_seed",
+  "duration_seconds": 45,
+  "variant_count": 10,
+  "export_formats": ["markdown", "json"],
+  "render": false,
+  "products": [
+    {
+      "title": "宠物自动饮水机",
+      "price": "89",
+      "category": "宠物用品",
+      "selling_points": ["静音循环", "多层过滤", "水箱可拆洗"],
+      "pain_points": ["猫咪不爱喝水", "普通水碗容易落灰"],
+      "target_audience": "养猫新手",
+      "usage_scenarios": ["猫咪日常饮水", "上班不在家时补水", "多猫家庭"],
+      "assets": ["media/smoke/pet_water.png"]
+    },
+    {
+      "title": "桌面氛围灯",
+      "price": "59",
+      "category": "桌面数码",
+      "selling_points": ["柔和不刺眼", "三档色温", "小桌面不占地"],
+      "pain_points": ["晚上桌面太暗", "普通台灯占空间"],
+      "target_audience": "租房办公和学生党",
+      "usage_scenarios": ["夜间学习", "居家办公", "拍摄桌面好物"],
+      "assets": []
+    },
+    {
+      "title": "便携筋膜枪",
+      "price": "129",
+      "category": "运动健康",
+      "selling_points": ["轻便好收纳", "多档位调节", "低噪不扰人"],
+      "pain_points": ["久坐肩颈酸", "大筋膜枪太沉"],
+      "target_audience": "久坐办公族和轻运动人群",
+      "usage_scenarios": ["办公室放松", "运动后恢复", "旅行携带"],
+      "assets": []
+    }
+  ]
+}
