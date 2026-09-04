@@ -4,6 +4,8 @@
 
 核心目标：用 Go + tRPC-Agent-Go 实现一个可观测、可扩展、可人工审核的 Agent workflow，把 OpenMontage 式端到端视频生产能力垂直化到商品种草、工具测评、知识内容和矩阵批量测试场景。
 
+当前实现状态：代码中的 `internal/agentkit` 是确定性的 GraphAgent、Tool、Artifact 占位适配层，并非真实的 tRPC-Agent-Go runtime；真实 tRPC-Agent-Go 仍属于后续接入计划。当前可运行主链路由 Go `net/http`、Engine、确定性 workflow、本地工具、导出器、可选渲染器和发布适配器组成。
+
 ## 架构原则
 
 1. 本地优先
@@ -26,6 +28,20 @@
    - 先实现确定性 workflow，让无模型环境也能跑通。
    - 再把节点升级为 tRPC-Agent-Go Agent / Graph / Tool / Memory / Eval。
 
+## ContentAtom 目标边界
+
+长期内容链路为：
+
+```text
+Research -> Evidence / Contradiction / Historical Context -> Judgment
+  -> Content Thesis -> ContentAtom
+  -> Content Distribution Pipeline -> Render -> Publish -> Analytics
+```
+
+`ContentAtom` 是 Judgment 层和内容分发层之间的目标契约。它使 Research/Judgment 的内部结构与现有视频生产、渲染、平台发布能力解耦；Offering、Research Report、Member Brief、Manual Content 或 Campaign 也可以先转换为 ContentAtom，再复用分发链路。P0 只记录边界，不定义正式 Go 类型，也不改变现有 workflow。
+
+正式架构决策见 [`docs/adr/0001-content-atom-boundary.md`](adr/0001-content-atom-boundary.md)。
+
 ## 总体结构
 
 ```text
@@ -41,25 +57,20 @@ web console
 
 ```text
 cmd/server/                 # Go 服务入口
-internal/api/               # HTTP API 和静态页面服务
+internal/api/               # HTTP API
 internal/domain/            # 视频项目、Offering、脚本、分镜、素材、发布包、发布状态和测试变体
 internal/workflow/          # 视频生产 workflow 状态机和节点接口
-internal/agentkit/          # tRPC-Agent-Go 适配层
-internal/templates/         # 小红书/抖音/视频号模板
-internal/storage/           # JSON/SQLite 存储
-internal/assets/            # 素材索引、素材匹配
-internal/tts/               # Edge TTS / 本地 TTS
-internal/subtitle/          # SRT / ASS 字幕
-internal/render/            # FFmpeg / Remotion 渲染计划
+internal/agentkit/          # 当前确定性 agentkit 占位层；真实 tRPC-Agent-Go 为后续规划
+internal/tools/             # 商品规整、模板、QA、素材和字幕工具
+internal/exporter/          # Markdown / JSON 发布包
+internal/render/            # OpenMontage 可选渲染适配
 internal/publisher/         # 平台发布注册表和官方适配器
-internal/qa/                # 质量检查、禁用词、平台适配检查
-web/                        # 本地 Web 控制台
-data/projects/              # 本地项目数据
-data/assets/                # 本地素材库
-data/exports/               # 导出发布包
-templates/                  # 可配置模板包
+internal/store/             # 当前内存存储
 docs/                       # 架构和技术规划
+data/                       # 本地运行时数据
 ```
+
+`internal/storage`、`internal/assets`、`internal/tts`、`internal/subtitle`、`internal/qa`、`web/`、`templates/` 以及 `data/projects/`、`data/assets/`、`data/exports/` 是后续演进方向或运行时目录，不代表当前已经存在的独立 Go 包或固定目录。
 
 ## Workflow 状态模型
 
@@ -299,6 +310,8 @@ product/link/materials
 - OpenMontage 偏通用创意视频，本项目偏电商/矩阵运营。
 - OpenMontage 偏单条生产，本项目强调批量变体和测试回流。
 - OpenMontage 可大量使用云端生成，本项目优先本地化和低成本。
+
+Docker 边界：Docker 镜像只保证 API 和无渲染的确定性 workflow 可运行，不包含 OpenMontage、Node.js、Python、FFmpeg 等完整渲染依赖；渲染增强仍需在宿主机单独安装和配置。
 
 ## API 分层
 

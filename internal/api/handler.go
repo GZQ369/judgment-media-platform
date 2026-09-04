@@ -25,7 +25,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/batches/", h.batchByID)
 	mux.HandleFunc("/api/v1/projects", h.projects)
 	mux.HandleFunc("/api/v1/projects/", h.projectByID)
-	return logMiddleware(cors(mux))
+	return requestIDMiddleware(recoveryMiddleware(accessLogMiddleware(cors(mux))))
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
@@ -318,18 +318,12 @@ func methodNotAllowed(w http.ResponseWriter) {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", requestIDHeader)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/health") { /* reserved for structured logging */
 		}
 		next.ServeHTTP(w, r)
 	})

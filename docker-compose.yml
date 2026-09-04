@@ -1,0 +1,32 @@
+services:
+  video-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HTTP_PORT:-8088}:8088"
+    environment:
+      ADDR: "${CONTAINER_ADDR:-0.0.0.0:8088}"
+      VIDEO_FACTORY_DATA_DIR: "${VIDEO_FACTORY_DATA_DIR:-/app/data}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      HTTP_READ_TIMEOUT: "${HTTP_READ_TIMEOUT:-15s}"
+      HTTP_READ_HEADER_TIMEOUT: "${HTTP_READ_HEADER_TIMEOUT:-5s}"
+      HTTP_WRITE_TIMEOUT: "${HTTP_WRITE_TIMEOUT:-20m}"
+      HTTP_IDLE_TIMEOUT: "${HTTP_IDLE_TIMEOUT:-60s}"
+      SHUTDOWN_TIMEOUT: "${SHUTDOWN_TIMEOUT:-30s}"
+      OPENMONTAGE_DIR: "${OPENMONTAGE_DIR:-}"
+      DOUYIN_ACCESS_TOKEN: "${DOUYIN_ACCESS_TOKEN:-}"
+      DOUYIN_OPEN_ID: "${DOUYIN_OPEN_ID:-}"
+      DOUYIN_API_BASE_URL: "${DOUYIN_API_BASE_URL:-}"
+      XHS_SHARE_APP_KEY: "${XHS_SHARE_APP_KEY:-}"
+    volumes:
+      - video-agent-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8088/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  video-agent-data:

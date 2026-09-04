@@ -1,14 +1,14 @@
 # Agentic Video Factory
 
-本项目是一个本地化 Agentic 短视频生产工作流系统，面向抖音 / 小红书 / 视频号矩阵运营、电商商家、MCN、小型内容团队和知识内容创作者。
+本项目是一个本地化内容生产与分发工作流系统，当前以短视频为 MVP，面向抖音 / 小红书 / 视频号矩阵运营、电商商家、MCN、小型内容团队和知识内容创作者。
 
 当前目录名仍是 `vertical-intel-video-agent`，但项目定位已经收敛为：
 
-> 基于 tRPC-Agent-Go 的本地 Agentic 视频生产工作流，把 OpenMontage 式端到端视频生成能力垂直化到小红书 / 抖音 / 视频号 / 电商矩阵运营场景，并支持批量变体测试。
+> 以 `ContentAtom` 为内容契约，将 Research/Judgment 与可复用的 Content Distribution Pipeline 解耦；当前使用 Go 和确定性 workflow，未来接入 tRPC-Agent-Go。
 
 ## 边界
 
-本项目只聚焦本地短视频生产、发布包生成和矩阵批量测试；其他业务方向应放在独立项目中，不混入当前代码库。
+当前优先聚焦本地短视频生产、发布包生成和矩阵批量测试。长期分发层保留向 YouTube、Podcast、Newsletter、X 等格式和平台扩展的能力。
 
 ## 解决的问题
 
@@ -70,12 +70,12 @@ MVP 阶段采用“AI 生成 + 人工确认”的半自动模式，避免全自�
 ## 技术路线
 
 - 后端：Go + net/http 起步，不使用 FastAPI
-- Agent workflow：tRPC-Agent-Go
+- Agent workflow：当前为确定性 `internal/agentkit` / `internal/workflow` 占位实现，tRPC-Agent-Go 为规划中的编排运行时
 - 本地模型：Ollama / OpenAI-compatible endpoint，可插拔
 - 配音：Edge TTS 起步，后续可接 GPT-SoVITS / CosyVoice
 - 字幕：SRT 起步，后续支持 ASS 花字字幕
-- 渲染：FFmpeg 起步，后续可接 Remotion / HTML 动效渲染
-- 存储：本地 JSON 起步，后续 SQLite
+- 渲染：当前保留 OpenMontage 可选路径；Docker 不安装 OpenMontage、Node.js、Python 或 FFmpeg
+- 存储：当前为内存存储并将运行产物写入配置的数据目录，后续接入 SQLite
 - 前端：Go 内置静态 Web 控制台起步
 
 ## OpenMontage 参考点
@@ -89,9 +89,9 @@ OpenMontage 是 agentic video production system，强调从自然语言需求到
 - 从单条成片变成批量变体和 A/B 测试
 - 从开放素材搜索变成本地素材库 + 商品素材 + 可选 AI 生成素材
 
-## tRPC-Agent-Go 用法
+## Agent 实现状态
 
-tRPC-Agent-Go 用作 Agent workflow 编排层：
+当前代码并未接入真实 tRPC-Agent-Go。现有节点使用确定性 fallback，确保没有模型或 API key 时也能测试和运行：
 
 ```text
 ProductAnalyzer
@@ -107,7 +107,16 @@ ProductAnalyzer
   -> ExportPackager
 ```
 
-每个节点先实现确定性 fallback，保证无模型、无 API key 时也能跑通。接入 Ollama 或其他模型后，再把脚本、分镜、质检等节点切换为 LLM Agent。
+后续接入真实 tRPC-Agent-Go 时，Graph、Tool、Session、Memory、Eval 和 Artifact 会在不破坏现有视频链路的前提下逐步替换或包裹这些节点。
+
+## 目标内容边界
+
+```text
+Research -> Evidence -> Judgment -> Content Thesis -> ContentAtom
+  -> Content Distribution Pipeline -> Render -> Publish -> Analytics
+```
+
+Judgment 不直接生成平台专属脚本或调用 Publisher。商品、服务、能力以及未来的研究报告、会员简报和活动内容，都应先转换为 `ContentAtom`，再复用同一套分发流程。P0 只记录边界，正式 `ContentAtom` 类型和 facade 属于后续阶段。
 
 ## 计划 API
 
@@ -174,13 +183,24 @@ curl http://127.0.0.1:8088/health
 - Go `net/http` API
 - 视频项目、商品/服务/能力 Offering、脚本、分镜、素材计划、发布包、发布状态、A/B 变体和 batch job domain
 - `internal/workflow` 确定性节点
-- `internal/agentkit` tRPC-Agent-Go GraphAgent / Tool / Artifact 适配边界
+- `internal/agentkit` 确定性 GraphAgent / Tool / Artifact 适配边界，占位而非真实 tRPC-Agent-Go runtime
 - 小红书与抖音平台模板差异化
 - 同步 batch 运行、Markdown/JSON 文件导出和 batch report
-- OpenMontage 可选渲染路径
+- OpenMontage 可选渲染路径；Docker 仅支持 API 和无渲染 workflow，不含完整渲染依赖
 - 抖音官方 API 投稿、小红书官方分享 SDK 交接、视频号官方助手辅助发布，以及可扩展 Publisher 注册表
 
-后续重点是 Web 控制台、真实 tRPC-Agent-Go GraphAgent 接入、Edge TTS / 字幕增强、FFmpeg 或 OpenMontage 成片稳定化，以及指标回填复盘。
+后续重点是持久化、Judgment/ContentAtom 契约、真实 tRPC-Agent-Go GraphAgent 接入、Content Distribution Pipeline facade、Edge TTS / 字幕增强、FFmpeg 或 OpenMontage 成片稳定化，以及指标回填复盘。
+
+## Docker
+
+Docker 以非 root 用户运行 API，默认监听 `0.0.0.0:8088`，并通过 Compose named volume `video-agent-data` 持久化容器 `/app/data`。镜像不包含 OpenMontage、Node.js、Python、FFmpeg，也不包含平台账号授权，因此只保证健康检查和无渲染确定性 workflow。
+
+```bash
+docker compose up --build
+curl http://127.0.0.1:8088/health
+```
+
+Compose 使用独立的 `CONTAINER_ADDR` 注入容器内的 `ADDR`，因此本地 `.env` 可以继续保留 `ADDR=127.0.0.1:8088`，不会导致容器只监听自身回环地址。所有 Compose 环境变量都有默认值，不要求本地存在 `.env`；可复制 `.env.example` 后按需覆盖。
 
 ## 批量视频工厂 MVP
 

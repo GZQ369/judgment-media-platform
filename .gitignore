@@ -9,6 +9,8 @@ coverage.out
 data/
 logs/
 .env
+.env.*
+!.env.example
 tmp/
 tmp/gocache/
 tmp/smoke-data*/
@@ -17,6 +19,19 @@ tmp/server-smoke.*.log
 tmp/server-smoke*.log
 tmp/batch_smoke_response*.json
 .gocache/
+*.log
+
+# local credentials and certificate material
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+**/credentials/*.json
+**/secrets/*.json
 
 # local agent configuration and machine reports
 .agents/

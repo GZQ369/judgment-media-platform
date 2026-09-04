@@ -1,6 +1,6 @@
 # 文档总索引
 
-本文是 Agentic Video Factory / 批量视频工厂的文档入口。新同事、Codex、后续自动化 agent 都应先从这里判断应该读哪份文档。
+本文是 Agentic Video Factory / 批量视频工厂的文档入口。新同事、Codex、后续自动化 agent 都应先从这里判断应该读哪份文档。当前实现是确定性的本地 workflow；真实 tRPC-Agent-Go、多 Agent Judgment 和 ContentAtom 生产属于后续规划。
 
 ## 1. 先读哪几份
 
@@ -18,14 +18,16 @@
 ### 工程和架构
 
 1. `docs/ARCHITECTURE.md`
-   - 总体架构、目录分层、workflow、tRPC-Agent-Go 接入边界、OpenMontage 映射。
-2. `docs/TRPC_AGENT_GO_PLAN.md`
-   - tRPC-Agent-Go 分阶段落地计划。
-3. `docs/DEVELOPMENT.md`
+   - 当前实现、目标分层、ContentAtom 边界、目录职责、Docker 与渲染边界。
+2. `docs/adr/0001-content-atom-boundary.md`
+   - Research -> Judgment -> ContentAtom -> Content Distribution Pipeline 的架构决策。
+3. `docs/TRPC_AGENT_GO_PLAN.md`
+   - 规划中的 tRPC-Agent-Go 分阶段落地计划。
+4. `docs/DEVELOPMENT.md`
    - 本地开发规范、命令、目录职责、代码约束。
-4. `docs/API_REFERENCE.md`
+5. `docs/API_REFERENCE.md`
    - 当前 HTTP API、请求/响应字段、错误格式和 curl 示例。
-5. `docs/DATA_MODEL.md`
+6. `docs/DATA_MODEL.md`
    - domain 结构、状态、导出路径和持久化边界。
 
 ### 批量视频工厂
@@ -78,6 +80,8 @@
 - 无 API key deterministic fallback。
 - 小红书 / 抖音平台差异化。
 - 商品、服务、能力三类 Offering 输入和多平台发布适配器。
+- ContentAtom 作为 Judgment 与 Distribution 之间的目标契约边界。
+- Docker 无渲染依赖的部署边界和 CI 基线。
 
 仍建议后续补充：
 
@@ -99,4 +103,4 @@
 7. `docs/ACCEPTANCE_CHECKLIST.md`
 8. 需要改哪个模块，再读对应 `docs/modules/*.md`
 
-不要跳过产品文档直接改代码；本项目核心不是单条视频 demo，而是本地、批量、平台适配、可审核、可测试的短视频生产工厂。
+不要跳过产品文档直接改代码；本项目核心不是单条视频 demo，而是本地、批量、平台适配、可审核、可测试的内容生产与分发系统。修改 Judgment 或 Research 时，必须保持 `ContentAtom` 边界，不得直接调用视频 workflow 或 Publisher。
