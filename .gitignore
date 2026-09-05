@@ -48,3 +48,20 @@ smoke/**/*.json
 # editor
 .vscode/
 .idea/
+
+# Windows browser bridge local runtime and dependencies
+tools/windows-browser-bridge/node_modules/
+tools/windows-browser-bridge/.npm/
+tools/windows-browser-bridge/runs/
+tools/windows-browser-bridge/logs/
+tools/windows-browser-bridge/profile/
+tools/windows-browser-bridge/auth.token
+tools/windows-browser-bridge/state/
+tools/windows-browser-bridge/runtime/
+
+# Keep the Node entrypoint source while ignoring compiled bridge binaries.
+!tools/
+!tools/windows-browser-bridge/
+!tools/windows-browser-bridge/bin/
+tools/windows-browser-bridge/bin/*
+!tools/windows-browser-bridge/bin/ego-browser.mjs

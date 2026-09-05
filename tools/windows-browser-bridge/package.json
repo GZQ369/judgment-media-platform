@@ -1,0 +1,17 @@
+{
+  "name": "@judgment-media/windows-browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node smoke/smoke.mjs",
+    "status": "node bin/ego-browser.mjs status"
+  },
+  "dependencies": {
+    "playwright-core": "^1.52.0"
+  }
+}

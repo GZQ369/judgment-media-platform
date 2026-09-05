@@ -189,6 +189,10 @@ curl http://127.0.0.1:8088/health
 
 后续重点是持久化、Judgment/ContentAtom 契约、真实 tRPC-Agent-Go GraphAgent 接入、Content Distribution Pipeline facade、Edge TTS / 字幕增强、FFmpeg 或 OpenMontage 成片稳定化，以及指标回填复盘。
 
+## Windows Browser Draft Runtime
+
+个人创作者可通过独立的 Windows 浏览器草稿运行时，把现有视频发布包准备到抖音、小红书、视频号和 Bilibili 的创作者页面。它复用专用浏览器登录态，默认停在最终发布前，不改变现有 workflow/render/exporter/publisher 业务行为。安装与安全边界见 [WINDOWS_BROWSER_BRIDGE.md](docs/modules/WINDOWS_BROWSER_BRIDGE.md)。
+
 ## Docker
 
 Docker 以非 root 用户运行 API，默认监听 `0.0.0.0:8088`，并通过 Compose named volume `video-agent-data` 持久化容器 `/app/data`。镜像不包含 OpenMontage、Node.js、Python、FFmpeg，也不包含平台账号授权，因此只保证健康检查和无渲染确定性 workflow。
