@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/tools"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/tools"
 )
 
 // QAReviewerNode 检查平台风格、素材完整度和风险表达。

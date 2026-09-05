@@ -3,8 +3,8 @@ package workflow
 import (
 	"context"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/tools"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/tools"
 )
 
 // MaterialPlannerNode 根据分镜生成素材需求和补拍建议。

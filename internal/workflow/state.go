@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // AgentExecutor 是 workflow 调用 agentkit runner 的最小接口。

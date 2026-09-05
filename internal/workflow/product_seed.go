@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // ProductSeedRunner 执行商品短视频发布包 workflow。

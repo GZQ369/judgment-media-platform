@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"testing"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 func TestDouyinPublisherUploadsThenCreatesVideo(t *testing.T) {

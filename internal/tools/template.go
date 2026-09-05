@@ -1,6 +1,6 @@
 package tools
 
-import "vertical-intel-video-agent/internal/domain"
+import "github.com/GZQ369/judgment-media-platform/internal/domain"
 
 // DefaultTemplateForPlatform 返回指定平台的默认 MVP 模板。
 func DefaultTemplateForPlatform(platform domain.Platform) string {

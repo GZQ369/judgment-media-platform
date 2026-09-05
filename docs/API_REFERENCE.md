@@ -22,7 +22,7 @@ http://127.0.0.1:8088
 
 ```json
 {
-  "service": "agentic-video-factory",
+  "service": "judgment-media-platform",
   "status": "ok",
   "time": "2026-07-01T00:00:00Z"
 }

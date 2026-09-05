@@ -8,7 +8,7 @@
 
 ```bash
 export PATH=/d/agent/.tools/go/bin:$PATH
-cd /d/agent/vertical-intel-video-agent
+cd /d/agent/judgment-media-platform
 ```
 
 确认 Go：
@@ -52,7 +52,7 @@ curl -sS http://127.0.0.1:8088/health
 期望看到：
 
 ```json
-{"service":"agentic-video-factory","status":"ok",...}
+{"service":"judgment-media-platform","status":"ok",...}
 ```
 
 ## 4. 跑批量 smoke
@@ -158,7 +158,7 @@ D:/agent/video-workers/OpenMontage/video_factory_pipeline_runner.py
 
 ```text
 日期：
-分支/目录：D:/agent/vertical-intel-video-agent
+分支/目录：D:/agent/judgment-media-platform
 命令：
 - gofmt -w ./cmd ./internal
 - bash -n smoke/run_batch_smoke.sh

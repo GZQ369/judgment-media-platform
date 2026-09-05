@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/engine"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/engine"
 )
 
 type Handler struct{ engine *engine.Engine }
@@ -33,7 +33,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "agentic-video-factory", "time": time.Now().UTC()})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "judgment-media-platform", "time": time.Now().UTC()})
 }
 
 func (h *Handler) templates(w http.ResponseWriter, r *http.Request) {

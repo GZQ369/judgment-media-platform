@@ -1,6 +1,6 @@
 # 文档总索引
 
-本文是 Agentic Video Factory / 批量视频工厂的文档入口。新同事、Codex、后续自动化 agent 都应先从这里判断应该读哪份文档。当前实现是确定性的本地 workflow；真实 tRPC-Agent-Go、多 Agent Judgment 和 ContentAtom 生产属于后续规划。
+本文是 Judgment Media Platform / 批量视频工厂的文档入口。新同事、Codex、后续自动化 agent 都应先从这里判断应该读哪份文档。当前实现是确定性的本地 workflow；真实 tRPC-Agent-Go、多 Agent Judgment 和 ContentAtom 生产属于后续规划。
 
 ## 1. 先读哪几份
 

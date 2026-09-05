@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // PlatformProfile 描述平台差异化生成时使用的语气、标题和行动建议。

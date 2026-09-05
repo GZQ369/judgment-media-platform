@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/tools"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/tools"
 )
 
 // ScriptWriterNode 生成标题、封面文案和三个脚本版本。

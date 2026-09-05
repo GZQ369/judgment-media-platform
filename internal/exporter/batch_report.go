@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // ExportBatchReportFiles 写出 batch_report.md 和 batch_report.json。

@@ -1,8 +1,6 @@
-# Agentic Video Factory
+# Judgment Media Platform
 
 本项目是一个本地化内容生产与分发工作流系统，当前以短视频为 MVP，面向抖音 / 小红书 / 视频号矩阵运营、电商商家、MCN、小型内容团队和知识内容创作者。
-
-当前目录名仍是 `vertical-intel-video-agent`，但项目定位已经收敛为：
 
 > 以 `ContentAtom` 为内容契约，将 Research/Judgment 与可复用的 Content Distribution Pipeline 解耦；当前使用 Go 和确定性 workflow，未来接入 tRPC-Agent-Go。
 
@@ -142,7 +140,7 @@ POST /api/v1/projects/{id}/variants/{variant_id}/metrics
 
 ```bash
 export PATH=/d/agent/.tools/go/bin:$PATH
-cd /d/agent/vertical-intel-video-agent
+cd /d/agent/judgment-media-platform
 go test ./...
 go run ./cmd/server
 ```

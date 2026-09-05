@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"vertical-intel-video-agent/internal/engine"
-	"vertical-intel-video-agent/internal/store"
+	"github.com/GZQ369/judgment-media-platform/internal/engine"
+	"github.com/GZQ369/judgment-media-platform/internal/store"
 )
 
 func TestRequestIDMiddlewarePropagatesValidIDAndReplacesInvalidID(t *testing.T) {
@@ -179,7 +179,7 @@ func TestHealthCheckKeepsJSONAndMiddlewareHeaders(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if body.Status != "ok" || body.Service != "agentic-video-factory" {
+	if body.Status != "ok" || body.Service != "judgment-media-platform" {
 		t.Fatalf("health body=%+v", body)
 	}
 }

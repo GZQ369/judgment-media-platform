@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"vertical-intel-video-agent/internal/config"
+	"github.com/GZQ369/judgment-media-platform/internal/config"
 )
 
 func TestNewServerConfiguresTimeouts(t *testing.T) {

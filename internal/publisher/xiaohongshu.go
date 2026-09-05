@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 type XiaohongshuPublisher struct {

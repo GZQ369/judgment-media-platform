@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/engine"
-	"vertical-intel-video-agent/internal/store"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/engine"
+	"github.com/GZQ369/judgment-media-platform/internal/store"
 )
 
 func TestBatchEndpoints(t *testing.T) {

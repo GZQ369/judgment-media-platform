@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"vertical-intel-video-agent/internal/agentkit"
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/agentkit"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 func TestWorkflowNodesGenerateBriefState(t *testing.T) {

@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"vertical-intel-video-agent/internal/agentkit"
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/exporter"
-	"vertical-intel-video-agent/internal/publisher"
-	"vertical-intel-video-agent/internal/render"
-	"vertical-intel-video-agent/internal/store"
-	"vertical-intel-video-agent/internal/tools"
-	"vertical-intel-video-agent/internal/workflow"
+	"github.com/GZQ369/judgment-media-platform/internal/agentkit"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/exporter"
+	"github.com/GZQ369/judgment-media-platform/internal/publisher"
+	"github.com/GZQ369/judgment-media-platform/internal/render"
+	"github.com/GZQ369/judgment-media-platform/internal/store"
+	"github.com/GZQ369/judgment-media-platform/internal/tools"
+	"github.com/GZQ369/judgment-media-platform/internal/workflow"
 )
 
 var (

@@ -37,7 +37,7 @@
 
 ```bash
 export PATH=/d/agent/.tools/go/bin:$PATH
-cd /d/agent/vertical-intel-video-agent
+cd /d/agent/judgment-media-platform
 ```
 
 常用命令：

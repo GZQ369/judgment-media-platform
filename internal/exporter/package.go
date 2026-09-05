@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // ExportProjectFiles 把单项目发布包写成 Markdown/JSON 文件。

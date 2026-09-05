@@ -138,7 +138,7 @@ Batch report 必须说明：
 
 ```bash
 export PATH=/d/agent/.tools/go/bin:$PATH
-cd /d/agent/vertical-intel-video-agent
+cd /d/agent/judgment-media-platform
 gofmt -w ./cmd ./internal
 bash -n smoke/run_batch_smoke.sh
 go test ./...

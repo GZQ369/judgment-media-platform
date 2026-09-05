@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 type OpenMontageRenderer struct {
@@ -113,7 +113,7 @@ func NewOpenMontageRenderer(rootDir, dataDir string) *OpenMontageRenderer {
 		rootDir = getenv("OPENMONTAGE_DIR", "D:/agent/video-workers/OpenMontage")
 	}
 	if dataDir == "" {
-		dataDir = getenv("VIDEO_FACTORY_DATA_DIR", "D:/agent/vertical-intel-video-agent/data")
+		dataDir = getenv("VIDEO_FACTORY_DATA_DIR", "D:/agent/judgment-media-platform/data")
 	}
 	return &OpenMontageRenderer{RootDir: filepath.Clean(rootDir), DataDir: filepath.Clean(dataDir)}
 }

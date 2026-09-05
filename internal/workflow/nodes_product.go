@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"vertical-intel-video-agent/internal/domain"
-	"vertical-intel-video-agent/internal/tools"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/tools"
 )
 
 // ProductAnalyzerNode 分析商品输入并补齐 fallback 信息。

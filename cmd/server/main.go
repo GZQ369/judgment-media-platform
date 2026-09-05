@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"vertical-intel-video-agent/internal/api"
-	"vertical-intel-video-agent/internal/config"
-	"vertical-intel-video-agent/internal/engine"
-	"vertical-intel-video-agent/internal/observability"
-	"vertical-intel-video-agent/internal/store"
+	"github.com/GZQ369/judgment-media-platform/internal/api"
+	"github.com/GZQ369/judgment-media-platform/internal/config"
+	"github.com/GZQ369/judgment-media-platform/internal/engine"
+	"github.com/GZQ369/judgment-media-platform/internal/observability"
+	"github.com/GZQ369/judgment-media-platform/internal/store"
 )
 
 func main() {

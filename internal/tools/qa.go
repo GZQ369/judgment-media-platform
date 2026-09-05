@@ -3,7 +3,7 @@ package tools
 import (
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // CheckPlatformStyle 对生成内容做确定性平台风格和风险检查。

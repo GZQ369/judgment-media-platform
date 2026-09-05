@@ -1,10 +1,10 @@
-# Codex 目标模式任务：把 vertical-intel-video-agent 完善成可批量跑的小红书 / 抖音视频工厂
+# Codex 目标模式任务：把 Judgment Media Platform 完善成可批量跑的小红书 / 抖音视频工厂
 
-> 使用方式：在 `D:/agent/vertical-intel-video-agent` 仓库根目录打开 Codex，把本文档整体作为目标模式 / target prompt 投喂给 Codex。Codex 要先读取 `docs/PRODUCT_TARGET_BATCH_VIDEO_FACTORY.md` 理解产品目标，再按本文档实施代码改造、补测试、运行验证命令，并在最后报告真实命令输出。
+> 使用方式：在 `D:/agent/judgment-media-platform` 仓库根目录打开 Codex，把本文档整体作为目标模式 / target prompt 投喂给 Codex。Codex 要先读取 `docs/PRODUCT_TARGET_BATCH_VIDEO_FACTORY.md` 理解产品目标，再按本文档实施代码改造、补测试、运行验证命令，并在最后报告真实命令输出。
 
 ## 0. 绝对约束
 
-1. 工作目录：`D:/agent/vertical-intel-video-agent`
+1. 工作目录：`D:/agent/judgment-media-platform`
 2. 这是一个 Go 项目，当前使用 `net/http`，不要改成 FastAPI。
 3. 在 Windows Git Bash / MSYS 环境下运行命令。Go 推荐使用：
 
@@ -469,4 +469,4 @@ Codex 最后回复必须包含：
 
 ## 8. 可以直接粘给 Codex 的一句话目标
 
-请在 `D:/agent/vertical-intel-video-agent` 中实现 `docs/CODEX_TARGET_BATCH_VIDEO_FACTORY.md` 描述的批量视频工厂 MVP：先读取 `docs/PRODUCT_TARGET_BATCH_VIDEO_FACTORY.md` 理解产品目标和验收口径，再以 `docs/TRPC_AGENT_GO_PLAN.md` 为架构约束，新增 `internal/workflow` 确定性节点、`internal/agentkit` tRPC-Agent-Go GraphAgent/Tool/Artifact 适配层、`internal/tools` 工具层和 `internal/exporter` 导出层；新增 batch domain/store/engine/API，支持一次输入多个商品，批量生成运营人员可审核的 brief、titles、cover texts、scripts、storyboard、material plan、variants、Markdown/JSON 发布包、本地 batch report，并加入小红书/抖音模板差异化、smoke 请求文件、中文模块文档和 Go 测试。每个新增 package 要有中文 `doc.go`，每个 exported 类型/函数要有中文注释，`docs/modules/` 下要写清楚每个模块的职责、输入输出、调用链路、与 tRPC-Agent-Go 的关系、fallback 和测试方法。保持 Go net/http 架构、OpenMontage 集成不破坏、无 API key fallback 可跑通。最后运行 `gofmt -w ./cmd ./internal`、`bash -n smoke/run_batch_smoke.sh`、`go test ./...` 并报告真实输出。
+请在 `D:/agent/judgment-media-platform` 中实现 `docs/CODEX_TARGET_BATCH_VIDEO_FACTORY.md` 描述的批量视频工厂 MVP：先读取 `docs/PRODUCT_TARGET_BATCH_VIDEO_FACTORY.md` 理解产品目标和验收口径，再以 `docs/TRPC_AGENT_GO_PLAN.md` 为架构约束，新增 `internal/workflow` 确定性节点、`internal/agentkit` tRPC-Agent-Go GraphAgent/Tool/Artifact 适配层、`internal/tools` 工具层和 `internal/exporter` 导出层；新增 batch domain/store/engine/API，支持一次输入多个商品，批量生成运营人员可审核的 brief、titles、cover texts、scripts、storyboard、material plan、variants、Markdown/JSON 发布包、本地 batch report，并加入小红书/抖音模板差异化、smoke 请求文件、中文模块文档和 Go 测试。每个新增 package 要有中文 `doc.go`，每个 exported 类型/函数要有中文注释，`docs/modules/` 下要写清楚每个模块的职责、输入输出、调用链路、与 tRPC-Agent-Go 的关系、fallback 和测试方法。保持 Go net/http 架构、OpenMontage 集成不破坏、无 API key fallback 可跑通。最后运行 `gofmt -w ./cmd ./internal`、`bash -n smoke/run_batch_smoke.sh`、`go test ./...` 并报告真实输出。

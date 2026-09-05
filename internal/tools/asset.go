@@ -3,7 +3,7 @@ package tools
 import (
 	"strings"
 
-	"vertical-intel-video-agent/internal/domain"
+	"github.com/GZQ369/judgment-media-platform/internal/domain"
 )
 
 // NormalizeAssetPaths 去掉空素材路径，保留用户给出的本地素材引用。
