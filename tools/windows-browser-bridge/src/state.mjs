@@ -142,7 +142,6 @@ export class LeaseManager {
   }
 
   acquire(taskSpaceId, sessionId) {
-    this.reap();
     const current = this.leases.get(taskSpaceId);
     if (current && current.sessionId !== sessionId) {
       throw new BridgeError("TASK_SPACE_BUSY", "user has taken control of this task space");
@@ -165,7 +164,7 @@ export class LeaseManager {
     if (lease?.sessionId === sessionId) this.leases.delete(taskSpaceId);
   }
 
-  has(taskSpaceId, sessionId) { this.reap(); return this.leases.get(taskSpaceId)?.sessionId === sessionId; }
+  has(taskSpaceId, sessionId) { return this.leases.get(taskSpaceId)?.sessionId === sessionId; }
 
-  owner(taskSpaceId) { this.reap(); return this.leases.get(taskSpaceId)?.sessionId || null; }
+  owner(taskSpaceId) { return this.leases.get(taskSpaceId)?.sessionId || null; }
 }

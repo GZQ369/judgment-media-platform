@@ -93,6 +93,19 @@ func ProfileForPlatform(platform domain.Platform) PlatformProfile {
 			ShotPace:        "fast",
 			DefaultDuration: 35,
 		}
+	case domain.PlatformBilibili:
+		return PlatformProfile{
+			Platform:        domain.PlatformBilibili,
+			Template:        "bilibili_knowledge_story",
+			Audience:        "Bilibili用户",
+			Tone:            []string{"知识分享", "证据可追溯", "讲清来龙去脉", "允许讨论", "不硬广"},
+			TitlePatterns:   []string{"%s：证据、观点和适用边界", "%s到底说明了什么？把依据讲清楚", "关于%s，先看这几个关键判断", "%s的来龙去脉与限制", "一个问题讲清%s"},
+			CoverPatterns:   []string{"证据和观点", "先看关键判断", "边界也要讲清", "这件事说明什么"},
+			CallToActions:   []string{"欢迎在评论区补充你的观察", "如果你有不同证据，欢迎一起讨论", "收藏后按证据和边界复核", "评论区说说你的实际场景"},
+			Tags:            []string{"知识分享", "研究解读", "证据讨论", "观点梳理"},
+			ShotPace:        "explanatory",
+			DefaultDuration: 90,
+		}
 	default:
 		return PlatformProfile{
 			Platform:        domain.PlatformXiaohongshu,
@@ -132,7 +145,9 @@ func NormalizeOffering(offering domain.OfferingInput, platform domain.Platform) 
 		offering.ValuePoints = offering.SellingPoints
 	}
 	offering.ValuePoints = NormalizePoints(offering.ValuePoints)
-	offering.SellingPoints = offering.ValuePoints
+	if offering.Kind != domain.OfferingKindCapability {
+		offering.SellingPoints = offering.ValuePoints
+	}
 	if len(offering.Problems) == 0 {
 		offering.Problems = offering.PainPoints
 	}

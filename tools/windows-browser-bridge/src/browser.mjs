@@ -1,6 +1,118 @@
 import path from "node:path";
+import crypto from "node:crypto";
 import { BridgeError } from "./errors.mjs";
 import { assertAllowedCDP, guardSource, isFinalPublishLabel, normalizeLabel, validateUploadPath } from "./security.mjs";
+
+const PUBLICATION_POLL_ATTEMPTS = 8;
+const PUBLICATION_POLL_DELAY_MS = 500;
+
+const PLATFORM_RULES = Object.freeze({
+  douyin: Object.freeze({
+    hosts: new Set(["creator.douyin.com", "www.douyin.com", "m.douyin.com"]),
+    detail: /^\/(?:video|note)\/([^/?#]+)/i,
+    statuses: new Map([
+      ["审核中", "reviewing"], ["作品审核中", "reviewing"], ["发布审核中", "reviewing"],
+      ["发布成功", "submitted"], ["作品已发布", "published"], ["已发布", "published"],
+    ]),
+  }),
+  xiaohongshu: Object.freeze({
+    hosts: new Set(["creator.xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com"]),
+    detail: /^\/(?:explore|discovery\/item)\/([^/?#]+)/i,
+    statuses: new Map([
+      ["审核中", "reviewing"], ["笔记审核中", "reviewing"], ["发布审核中", "reviewing"],
+      ["发布成功", "submitted"], ["笔记已发布", "published"], ["已发布", "published"],
+    ]),
+  }),
+  bilibili: Object.freeze({
+    hosts: new Set(["member.bilibili.com", "www.bilibili.com"]),
+    detail: /^\/video\/([^/?#]+)/i,
+    statuses: new Map([
+      ["审核中", "reviewing"], ["稿件审核中", "reviewing"], ["投稿审核中", "reviewing"],
+      ["投稿成功", "submitted"], ["稿件已发布", "published"], ["已发布", "published"],
+    ]),
+  }),
+});
+
+function compact(value) { return String(value || "").replace(/\s+/g, " ").trim(); }
+
+function boundedString(value, max = 512) {
+  const result = compact(value);
+  return result.length > max ? result.slice(0, max) : result;
+}
+
+function trustedURL(platform, value) {
+  const rules = PLATFORM_RULES[platform];
+  if (!rules || typeof value !== "string") return null;
+  let parsed;
+  try { parsed = new URL(value); } catch { return null; }
+  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password) return null;
+  if (!rules.hosts.has(parsed.hostname.toLowerCase())) return null;
+  return parsed;
+}
+
+function detailEvidence(platform, value) {
+  const parsed = trustedURL(platform, value);
+  const rules = PLATFORM_RULES[platform];
+  if (!parsed || !rules) return null;
+  const match = parsed.pathname.match(rules.detail);
+  if (!match || !match[1]) return null;
+  let externalID;
+  try { externalID = boundedString(decodeURIComponent(match[1])); } catch { return null; }
+  return externalID ? { externalID, externalURL: parsed.href } : null;
+}
+
+function normalizePublicationStatus(platform, value) {
+  const rules = PLATFORM_RULES[platform];
+  if (!rules) return "";
+  return rules.statuses.get(compact(value)) || "";
+}
+
+function unknownPublicationEvidence() {
+  return { status: "unknown", externalID: "", externalURL: "", evidenceSource: "unknown" };
+}
+
+function publicationIdentity(platform, raw = {}) {
+  const detail = detailEvidence(platform, boundedString(raw.url));
+  const linked = detailEvidence(platform, boundedString(raw.externalURL));
+  const ids = [boundedString(raw.externalID), detail?.externalID, linked?.externalID].filter(Boolean);
+  if (new Set(ids).size > 1) return null;
+  return { externalID: ids[0] || "", externalURL: linked?.externalURL || detail?.externalURL || "" };
+}
+
+function samePublicationIdentity(left = {}, right = {}) {
+  return Boolean(
+    (left.externalID && right.externalID && left.externalID === right.externalID)
+    || (left.externalURL && right.externalURL && left.externalURL === right.externalURL),
+  );
+}
+
+function trustedPublicationEvidence(platform, raw = {}, { mode = "reconcile", correlation = null } = {}) {
+  const currentURL = boundedString(raw.url);
+  const pageURL = trustedURL(platform, currentURL);
+  if (!pageURL || !correlation) return unknownPublicationEvidence();
+
+  const detail = detailEvidence(platform, currentURL);
+  const identity = publicationIdentity(platform, raw);
+  if (!identity) return unknownPublicationEvidence();
+  const externalURL = identity.externalURL;
+  const externalID = identity.externalID;
+  const status = normalizePublicationStatus(platform, raw.status) || normalizePublicationStatus(platform, raw.statusText);
+  if (!externalID && !externalURL) return unknownPublicationEvidence();
+
+  if (mode === "publish") {
+    const baseline = correlation.baseline || {};
+    const baselineIdentity = publicationIdentity(platform, baseline);
+    if (!trustedURL(platform, baseline.url) || !baselineIdentity || samePublicationIdentity(identity, baselineIdentity)) {
+      return unknownPublicationEvidence();
+    }
+  } else if (mode === "reconcile" && !samePublicationIdentity(identity, correlation)) {
+    return unknownPublicationEvidence();
+  }
+
+  if (detail) return { status: "published", ...detail, evidenceSource: "platform-detail-url" };
+  if (!status) return unknownPublicationEvidence();
+  return { status, externalID, externalURL, evidenceSource: "platform-dom" };
+}
 
 const executableCandidates = env => [
   env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
@@ -30,6 +142,7 @@ export class PlaywrightBrowserDriver {
     this.queues = new Map();
     this.inputQueue = Promise.resolve();
     this.cdpSessions = new Map();
+    this.restoredSpaces = new Set();
     this.healthy = false;
     this.unhealthyReason = null;
     this.onUnhealthy = null;
@@ -67,7 +180,7 @@ export class PlaywrightBrowserDriver {
   }
 
   spaceState(spaceId) {
-    if (!this.spaces.has(spaceId)) this.spaces.set(spaceId, { activePageId: null, pages: new Map() });
+    if (!this.spaces.has(spaceId)) this.spaces.set(spaceId, { activePageId: null, pages: new Map(), submissionCorrelation: null });
     return this.spaces.get(spaceId);
   }
 
@@ -84,22 +197,30 @@ export class PlaywrightBrowserDriver {
     const id = logicalId || `page-${spaceId ?? "unassigned"}-${this.nextPageId++}`;
     this.pages.set(page, { logicalId: id, spaceId });
     if (spaceId !== null) this.spaceState(spaceId).pages.set(id, page);
-    page.on("close", () => {
-      const owner = this.pages.get(page);
-      this.pages.delete(page);
-      if (owner?.spaceId !== null) {
-        const state = this.spaceState(owner.spaceId);
-        state.pages.delete(owner.logicalId);
-        if (state.activePageId === owner.logicalId) state.activePageId = null;
-      }
-      for (const key of this.queues.keys()) if (key.endsWith(`:${id}`)) this.queues.delete(key);
-      const session = this.cdpSessions.get(page);
-      this.cdpSessions.delete(page);
-      session?.detach().catch(() => {});
-    });
+    page.on("close", () => this.unregisterPage(page));
     page.addInitScript({ content: guardSource() }).catch(() => {});
     page.evaluate(guardSource()).catch(() => {});
     return id;
+  }
+
+  unregisterPage(page) {
+    const owner = this.pages.get(page);
+    if (!owner) return;
+    this.pages.delete(page);
+    if (owner.spaceId !== null) {
+      const state = this.spaceState(owner.spaceId);
+      state.pages.delete(owner.logicalId);
+      if (state.activePageId === owner.logicalId) state.activePageId = null;
+    }
+    for (const key of this.queues.keys()) if (key.endsWith(`:${owner.logicalId}`)) this.queues.delete(key);
+    const session = this.cdpSessions.get(page);
+    this.cdpSessions.delete(page);
+    session?.detach().catch(() => {});
+  }
+
+  async discardPage(page) {
+    try { await page.close?.({ runBeforeUnload: false }); } catch {}
+    this.unregisterPage(page);
   }
 
   pageById(spaceId, targetId) {
@@ -128,18 +249,53 @@ export class PlaywrightBrowserDriver {
   input(task) { const next = this.inputQueue.catch(() => {}).then(task); this.inputQueue = next.catch(() => {}); return next; }
 
   async listTabs(spaceId) {
-    return [...this.spaceState(spaceId).pages].map(([targetId, page]) => ({ targetId, url: page.url(), title: "" }));
+    const state = this.spaceState(spaceId);
+    const entries = [...state.pages];
+    const activeIndex = entries.findIndex(([targetId]) => targetId === state.activePageId);
+    if (activeIndex > 0) {
+      const [active] = entries.splice(activeIndex, 1);
+      entries.unshift(active);
+    }
+    return entries.map(([targetId, page]) => ({ targetId, url: page.url(), title: "" }));
   }
 
-  async restorePages(spaceId, records = []) {
+  async restorePages(spaceId, records = [], { activePageId = null, activeURL = "" } = {}) {
     const state = this.spaceState(spaceId);
-    for (const record of records) {
-      if (!record?.lastURL || record.lastURL === "about:blank") continue;
-      const existing = [...state.pages.values()].find(page => page.url() === record.lastURL);
-      const page = existing || await this.context.newPage();
-      const targetId = this.registerPage(page, spaceId, record.logicalId);
-      if (page.url() !== record.lastURL) await page.goto(record.lastURL, { waitUntil: "domcontentloaded", timeout: 45000 });
-      state.activePageId = targetId;
+
+    if (state.pages.size > 0) {
+      if (!state.activePageId || !state.pages.has(state.activePageId)) {
+        const activeByURL = activeURL
+          ? [...state.pages].find(([, page]) => page.url() === activeURL)?.[0]
+          : null;
+        state.activePageId = activePageId && state.pages.has(activePageId)
+          ? activePageId
+          : activeByURL || state.pages.keys().next().value || null;
+      }
+      this.restoredSpaces.add(spaceId);
+      return;
+    }
+    if (this.restoredSpaces.has(spaceId)) return;
+
+    const created = [];
+    try {
+      const restored = [];
+      for (const record of records) {
+        if (!record?.lastURL || record.lastURL === "about:blank") continue;
+        const page = await this.context.newPage();
+        created.push(page);
+        const targetId = this.registerPage(page, spaceId, record.logicalId);
+        if (page.url() !== record.lastURL) await page.goto(record.lastURL, { waitUntil: "domcontentloaded", timeout: 45000 });
+        restored.push({ targetId, persistedURL: record.lastURL });
+      }
+      const activeByURL = activeURL ? restored.find(item => item.persistedURL === activeURL)?.targetId : null;
+      state.activePageId = activePageId && state.pages.has(activePageId)
+        ? activePageId
+        : activeByURL || restored[0]?.targetId || null;
+      this.restoredSpaces.add(spaceId);
+    } catch (error) {
+      await Promise.allSettled(created.map(page => this.discardPage(page)));
+      state.activePageId = null;
+      throw error;
     }
   }
 
@@ -213,6 +369,78 @@ export class PlaywrightBrowserDriver {
     return labels[0] || "";
   }
 
+  async publicationSnapshot(page) {
+    return page.evaluate(() => {
+      const firstAttribute = (selectors, attributes) => {
+        for (const selector of selectors) {
+          const element = document.querySelector(selector);
+          if (!element) continue;
+          for (const attribute of attributes) {
+            const value = element.getAttribute?.(attribute);
+            if (value) return value;
+          }
+        }
+        return "";
+      };
+      const statusValues = [...document.querySelectorAll(
+        "[data-ego-publication-status], [data-publication-status], [data-submission-status]",
+      )].flatMap(element => [
+        element.getAttribute("data-ego-publication-status"),
+        element.getAttribute("data-publication-status"),
+        element.getAttribute("data-submission-status"),
+        element.textContent,
+      ]).filter(Boolean);
+      return {
+        url: location.href,
+        statusText: statusValues[0] || "",
+        status: statusValues[0] || "",
+        externalID: firstAttribute(
+          ["[data-work-id]", "[data-publication-id]", "[data-item-id]", "[data-video-id]", "[data-post-id]"],
+          ["data-work-id", "data-publication-id", "data-item-id", "data-video-id", "data-post-id", "content"],
+        ),
+        externalURL: firstAttribute(["[data-publication-url]", "[data-item-url]"], ["data-publication-url", "data-item-url", "href"]),
+      };
+    }).catch(() => ({}));
+  }
+
+  publicCorrelation(correlation) {
+    if (!correlation) return null;
+    return {
+      version: 1,
+      id: correlation.id,
+      taskSpaceId: correlation.taskSpaceId,
+      pageId: correlation.pageId,
+    };
+  }
+
+  async publicationEvidence(page, platform, taskSpaceId, targetId, { mode = "reconcile", correlation = null } = {}) {
+    const raw = await this.publicationSnapshot(page);
+    const scopedCorrelation = correlation
+      && String(correlation.taskSpaceId) === String(taskSpaceId)
+      && String(correlation.pageId) === String(targetId)
+      ? correlation
+      : null;
+    const evidence = trustedPublicationEvidence(platform, { ...raw, url: raw.url || page.url() }, { mode, correlation: scopedCorrelation });
+    return {
+      platform: String(platform || ""),
+      taskSpaceId: String(taskSpaceId),
+      status: evidence.status,
+      externalID: evidence.externalID,
+      externalURL: evidence.externalURL,
+      evidenceSource: evidence.evidenceSource,
+      evidenceState: evidence.status === "unknown" ? "unknown" : "identified",
+      submissionCorrelation: this.publicCorrelation(correlation),
+      dom: {
+        url: boundedString(raw.url || page.url()),
+        status: evidence.status,
+        externalID: evidence.externalID,
+        externalURL: evidence.externalURL,
+        evidenceSource: evidence.evidenceSource,
+        submissionCorrelation: this.publicCorrelation(correlation),
+      },
+    };
+  }
+
   async click(spaceId, selectorOrPoint, options = {}) {
     const page = this.currentPage(spaceId); const state = this.spaceState(spaceId);
     const target = Array.isArray(selectorOrPoint) ? selectorOrPoint : String(selectorOrPoint);
@@ -222,6 +450,75 @@ export class PlaywrightBrowserDriver {
       else await page.locator(target).click({ timeout: Number(options.timeout || 10000) });
       return { ok: true, label: options.label || null };
     }));
+  }
+
+  async publishOnce(spaceId, expectedLabel, authorized = false, platform = "") {
+    const label = normalizeLabel(expectedLabel);
+    if (authorized !== true) throw new BridgeError("PUBLISH_AUTH_REQUIRED", "current-run final publish authorization is required");
+    if (!isFinalPublishLabel(label)) throw new BridgeError("INVALID_PUBLISH_LABEL", `unsupported final publish label: ${label}`);
+    const page = this.currentPage(spaceId); const state = this.spaceState(spaceId);
+    return this.input(() => this.serial(spaceId, state.activePageId, async () => {
+      const targetId = state.activePageId;
+      const target = page.getByText(label, { exact: true }).last();
+      const count = await target.count();
+      if (count !== 1) throw new BridgeError("PUBLISH_CONTROL_NOT_FOUND", `expected one visible final publish control: ${label}`);
+      if (!await target.isVisible() || !await target.isEnabled()) throw new BridgeError("PUBLISH_CONTROL_NOT_READY", `final publish control is not ready: ${label}`);
+      const correlation = {
+        id: crypto.randomUUID(),
+        taskSpaceId: String(spaceId),
+        pageId: String(targetId),
+        baseline: await this.publicationSnapshot(page),
+        externalID: "",
+        externalURL: "",
+      };
+      state.submissionCorrelation = correlation;
+      await page.evaluate(value => {
+        const guard = window.__JUDGMENT_MEDIA_FINAL_PUBLISH_GUARD__;
+        if (!guard?.armed) throw new Error("final publish guard is not armed");
+        guard.authorization = { label: value, expiresAt: Date.now() + 5000 };
+      }, label);
+      try {
+        await target.click({ timeout: 10000 });
+        // A click is not evidence of submission. Poll only read-only,
+        // platform-bound evidence; an unknown result is never retried by
+        // clicking again.
+        let evidence = await this.publicationEvidence(page, platform, spaceId, targetId, { mode: "publish", correlation });
+        for (let attempt = 0; attempt < PUBLICATION_POLL_ATTEMPTS && evidence.status === "unknown"; attempt += 1) {
+          await page.waitForTimeout(PUBLICATION_POLL_DELAY_MS);
+          evidence = await this.publicationEvidence(page, platform, spaceId, targetId, { mode: "publish", correlation });
+        }
+        if (evidence.status !== "unknown") {
+          correlation.externalID = evidence.externalID;
+          correlation.externalURL = evidence.externalURL;
+        }
+        return {
+          ok: true,
+          finalPublishClicked: true,
+          label,
+          taskSpaceId: String(spaceId),
+          platform: String(platform || ""),
+          status: evidence.status,
+          externalID: evidence.externalID,
+          externalURL: evidence.externalURL,
+          evidenceSource: evidence.evidenceSource,
+          evidenceState: evidence.evidenceState,
+          submissionCorrelation: evidence.submissionCorrelation,
+          page: { url: page.url() },
+          dom: evidence.dom,
+        };
+      } finally {
+        await page.evaluate(() => {
+          const guard = window.__JUDGMENT_MEDIA_FINAL_PUBLISH_GUARD__;
+          if (guard) guard.authorization = null;
+        }).catch(() => {});
+      }
+    }));
+  }
+
+  async inspectPublication(spaceId, platform = "") {
+    const page = this.currentPage(spaceId); const state = this.spaceState(spaceId);
+    const correlation = state.submissionCorrelation;
+    return this.serial(spaceId, state.activePageId, () => this.publicationEvidence(page, platform, spaceId, state.activePageId, { mode: "reconcile", correlation }));
   }
 
   async hover(spaceId, selectorOrPoint, options = {}) {
@@ -264,6 +561,7 @@ export class PlaywrightBrowserDriver {
     this.healthy = false;
     for (const session of this.cdpSessions.values()) await session.detach().catch(() => {});
     this.cdpSessions.clear();
+    this.restoredSpaces.clear();
     await this.context?.close();
     this.context = null;
   }

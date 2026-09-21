@@ -29,3 +29,18 @@ test("page capture guard blocks DOM click and submit events", () => {
   }
   assert.equal(window.__JUDGMENT_MEDIA_FINAL_PUBLISH_GUARD__.blockedAttempts.length, 2);
 });
+
+test("page capture guard allows only a matching unexpired authorization", () => {
+  const listeners = {};
+  const document = { addEventListener: (type, fn) => { listeners[type] = fn; } };
+  const window = {};
+  vm.runInNewContext(guardSource(), { window, document, Element, Date });
+  const guard = window.__JUDGMENT_MEDIA_FINAL_PUBLISH_GUARD__;
+  guard.authorization = { label: "发布", expiresAt: Date.now() + 1000 };
+  const button = new Element("发布", true);
+  let prevented = false;
+  listeners.click({ target: button, composedPath: () => [button], preventDefault: () => { prevented = true; }, stopImmediatePropagation: () => {} });
+  assert.equal(prevented, false);
+  assert.equal(guard.authorizedAttempts.length, 1);
+  guard.authorization = null;
+});

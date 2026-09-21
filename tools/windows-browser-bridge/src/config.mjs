@@ -20,6 +20,7 @@ export function getConfig(env = process.env) {
     executablePath: env.WINDOWS_BROWSER_BRIDGE_EXECUTABLE || "",
     allowedMediaRoot: env.WINDOWS_BROWSER_BRIDGE_MEDIA_ROOT || "",
     requestTimeoutMs: Number(env.WINDOWS_BROWSER_BRIDGE_REQUEST_TIMEOUT_MS || 120000),
+    operationDrainTimeoutMs: Number(env.WINDOWS_BROWSER_BRIDGE_OPERATION_DRAIN_TIMEOUT_MS || 15000),
     launchTimeoutMs: Number(env.WINDOWS_BROWSER_BRIDGE_LAUNCH_TIMEOUT_MS || 30000),
     leaseTTLms: Number(env.WINDOWS_BROWSER_BRIDGE_LEASE_TTL_MS || 600000),
     startupLockStaleMs: Number(env.WINDOWS_BROWSER_BRIDGE_STARTUP_LOCK_STALE_MS || 30000),

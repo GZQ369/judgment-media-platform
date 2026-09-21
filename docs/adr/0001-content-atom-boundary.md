@@ -30,12 +30,12 @@ Research
 
 ## P0 范围
 
-P0 只记录边界，不定义正式的 `ContentAtom` Go 类型，不接入 tRPC-Agent-Go、LLM 或多 Agent 运行时，也不重命名现有 `internal/workflow`。当前确定性 workflow、渲染、A/B 变体、平台适配和发布行为保持不变。
+本 ADR 最初只记录边界，不定义正式的 `ContentAtom` Go 类型。当前实现已补上 `ContentAtom`、`DistributionRequest`、`DistributionRun` 和 SQLite-backed async Run，但仍不接入 tRPC-Agent-Go、LLM 或多 Agent 运行时，也不重命名现有 `internal/workflow`。现有确定性 workflow、渲染、A/B 变体、平台适配和发布行为保持不变。
 
 后续迁移通过外层 `Content Distribution Pipeline` facade 承接现有视频链路：先完成 ContentAtom/Legacy Offering Adapter，再把现有 workflow 作为内部实现接入 facade。这样 Judgment 的演进不会影响既有视频生产和发布能力。
 
 ## 后果
 
 - 当前代码仍是确定性 agentkit 占位实现，不能宣称已经运行真实 tRPC-Agent-Go。
-- P1/P2 需要先补可恢复的持久化和正式领域契约，再实现 Judgment 与 ContentAtom 生产。
+- P1/P2 仍需补 Legacy Offering Adapter、真实 Research/Judgment 生产链和可恢复的媒体/发布编排；当前异步 Run 的 ContentAtom 合同不等于 Judgment 已经自动生成。
 - 现有视频链路可以继续稳定交付，同时为 YouTube、Podcast、Newsletter、X 以及更多平台保留扩展位置。

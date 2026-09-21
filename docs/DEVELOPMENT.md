@@ -22,7 +22,7 @@
 - Agent workflow：先用确定性节点，逐步映射到 tRPC-Agent-Go。
 - 本地模型：Ollama / OpenAI-compatible endpoint 作为可选增强。
 - 渲染：`render=false` 是稳定主路径；OpenMontage / FFmpeg / Remotion 是增强路径。
-- 存储：当前内存 store + 本地导出文件；后续可补 SQLite。
+- 存储：项目 store 仍为内存实现；distribution run ledger 和 parent pipeline ledger 使用独立的本地 SQLite 文件。
 
 禁止：
 
@@ -53,6 +53,13 @@ go run ./cmd/server
 ```text
 http://127.0.0.1:8088
 ```
+
+### Parent pipeline gateway
+
+服务启动时会读取可选的 OpenAI-compatible gateway 配置：
+`AI_GATEWAY_BASE_URL` 与 `AI_GATEWAY_MODEL` 必须同时配置；API key 只用于请求认证，不会写入日志或 HTTP 响应。`AI_GATEWAY_TIMEOUT` 默认是 `2m`，`AI_GATEWAY_ALLOW_LOCAL` 默认关闭，只有明确打开时才允许 gateway 指向本机地址。
+
+不配置 gateway 时，服务仍然可以启动，distribution API 也仍可用；parent pipeline 请求会以 `capability_blocked` 结束，并明确标记 `judgment_workflow` 能力不可用。这个模式不代表已经接入真实模型。
 
 Smoke：
 

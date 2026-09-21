@@ -24,6 +24,10 @@ func (ScriptWriterNode) Run(_ context.Context, state *WorkflowState) error {
 	points := tools.NormalizePoints(state.Offering.ValuePoints)
 	audience := product.TargetAudience
 	title := product.Title
+	if state.Project.Platform == domain.PlatformBilibili {
+		writeBilibiliScripts(state, title, audience, points)
+		return nil
+	}
 	if state.Offering.Kind != domain.OfferingKindProduct {
 		vocabulary := tools.VocabularyForOffering(state.Offering)
 		state.TitleOptions = []string{
@@ -81,6 +85,78 @@ func (ScriptWriterNode) Run(_ context.Context, state *WorkflowState) error {
 	state.Caption = fmt.Sprintf("%s｜真实体验整理，适合%s先收藏慢慢看。\n\n%s\n\n#小红书种草 #好物分享 #新手避坑 #%s", title, audience, strings.Join(points, "｜"), tools.CleanTag(title))
 	state.Tags = []string{"小红书种草", "好物分享", "新手避坑", tools.CleanTag(title)}
 	return nil
+}
+
+// writeBilibiliScripts keeps the platform's longer explanatory shape while
+// still using the same deterministic workflow and output contract. For
+// content atoms the three points are explicitly framed as viewpoint, insight,
+// and boundary rather than product selling points.
+func writeBilibiliScripts(state *WorkflowState, title, audience string, points []string) {
+	titleOptions := []string{
+		"%s：证据、观点和适用边界",
+		"%s到底说明了什么？把依据讲清楚",
+		"关于%s，先看这几个关键判断",
+		"%s的来龙去脉与限制",
+		"一个问题讲清%s",
+	}
+	state.TitleOptions = make([]string, 0, len(titleOptions))
+	for _, pattern := range titleOptions {
+		state.TitleOptions = append(state.TitleOptions, tools.ShortRunes(fmt.Sprintf(pattern, title), 80))
+	}
+	state.CoverTexts = []string{"证据和观点", "先看关键判断", "边界也要讲清", "这件事说明什么"}
+	cta := tools.DefaultString(state.Offering.CallToAction, "欢迎在评论区补充你的观察")
+	if state.Offering.Kind == domain.OfferingKindProduct {
+		state.Scripts = []domain.Script{
+			makeScript("script_bili_explainer", "knowledge_explainer", state.TitleOptions[0], state.Angles[0].Hook, title, points, cta, 75, false),
+			makeScript("script_bili_compare", "evidence_compare", state.TitleOptions[1], state.Angles[1].Hook, title, points, cta, 90, false),
+			makeScript("script_bili_fit", "boundary_check", state.TitleOptions[2], state.Angles[2].Hook, title, points, cta, 85, false),
+		}
+	} else {
+		state.Scripts = []domain.Script{
+			makeEvidenceScript("script_bili_explainer", "knowledge_explainer", state.TitleOptions[0], state.Angles[0].Hook, title, points, cta, 75),
+			makeEvidenceScript("script_bili_compare", "evidence_compare", state.TitleOptions[1], state.Angles[1].Hook, title, points, cta, 90),
+			makeEvidenceScript("script_bili_fit", "boundary_check", state.TitleOptions[2], state.Angles[2].Hook, title, points, cta, 85),
+		}
+	}
+	state.Caption = tools.ShortRunes(fmt.Sprintf("%s｜这期把核心观点、证据和适用边界拆开讲，面向%s。\n\n%s\n\n欢迎理性讨论。", title, audience, strings.Join(points, "\n")), 2000)
+	state.Tags = bilibiliTags(title)
+}
+
+func makeEvidenceScript(id, style, title, hook, subject string, points []string, cta string, seconds int) domain.Script {
+	bodyLines := []string{
+		hook,
+		"先拆开核心观点：" + tools.SafePoint(points, 0),
+		"再看证据和推理：" + tools.SafePoint(points, 1),
+		"最后说明适用边界：" + tools.SafePoint(points, 2),
+		fmt.Sprintf("关于%s，结论要和证据范围一起理解，不把观点说成普遍事实。", subject),
+		cta,
+	}
+	full := strings.Join(bodyLines, "\n")
+	return domain.Script{
+		ID:            id,
+		Style:         style,
+		Title:         title,
+		Hook:          hook,
+		Body:          strings.Join(bodyLines[1:len(bodyLines)-1], "\n"),
+		CallToAction:  cta,
+		FullScript:    full,
+		VoiceoverText: full,
+		SubtitleText:  tools.SubtitleTextFromScript(full),
+		EstimatedS:    seconds,
+	}
+}
+
+func bilibiliTags(title string) []string {
+	profile := tools.ProfileForPlatform(domain.PlatformBilibili)
+	tags := append([]string(nil), profile.Tags...)
+	tags = append(tags, tools.CleanTag(title))
+	if len(tags) > 5 {
+		tags = tags[:5]
+	}
+	for i := range tags {
+		tags[i] = tools.ShortRunes(tools.CleanTag(tags[i]), 20)
+	}
+	return tags
 }
 
 func makeOfferingScript(id, style, title, hook, offering string, points []string, cta string, seconds int) domain.Script {
@@ -163,8 +239,22 @@ func (DirectorNode) Run(_ context.Context, state *WorkflowState) error {
 func buildStoryboard(platform domain.Platform, script domain.Script, offering domain.OfferingInput, points []string, duration int) domain.Storyboard {
 	if duration <= 0 {
 		duration = 45
+		if platform == domain.PlatformBilibili {
+			duration = 90
+		}
 	}
 	product := offering.Title
+	if platform == domain.PlatformBilibili {
+		shots := []domain.Shot{
+			{Index: 1, StartSecond: 0, EndSecond: 5, Visual: "标题卡 + 问题或结论预告", Voiceover: script.Hook, Subtitle: script.Hook, AssetType: "knowledge_hook", AssetHint: "主题标题卡、原始问题或关键画面", Transition: "直接切入", Purpose: "建立讨论问题"},
+			{Index: 2, StartSecond: 5, EndSecond: 20, Visual: "观点拆解与关键词标注", Voiceover: points[0], Subtitle: points[0], AssetType: "claim_breakdown", AssetHint: "观点文字卡、流程图或录屏", Transition: "章节切换", Purpose: "说清核心观点"},
+			{Index: 3, StartSecond: 20, EndSecond: 40, Visual: "证据引用与推理过程", Voiceover: tools.SafePoint(points, 1), Subtitle: tools.SafePoint(points, 1), AssetType: "evidence_reference", AssetHint: "证据来源、数据截图或引用卡", Transition: "重点放大", Purpose: "保留可复核依据"},
+			{Index: 4, StartSecond: 40, EndSecond: 60, Visual: "反方观点和适用边界", Voiceover: tools.SafePoint(points, 2), Subtitle: tools.SafePoint(points, 2), AssetType: "counterpoint", AssetHint: "限制条件、反例或对比图", Transition: "左右对照", Purpose: "避免过度概括"},
+			{Index: 5, StartSecond: 60, EndSecond: duration - 12, Visual: "结论回收与实际场景", Voiceover: script.Body, Subtitle: "按证据范围理解结论", AssetType: "takeaway", AssetHint: "结论清单、场景演示或章节总结", Transition: "稳定推进", Purpose: "帮助观众应用"},
+			{Index: 6, StartSecond: duration - 12, EndSecond: duration, Visual: "评论区讨论入口", Voiceover: script.CallToAction, Subtitle: script.CallToAction, AssetType: "discussion_cta", AssetHint: "评论提示、资料补充或关注引导", Transition: "收束", Purpose: "邀请理性讨论"},
+		}
+		return domain.Storyboard{ScriptID: script.ID, Shots: shots}
+	}
 	if offering.Kind != domain.OfferingKindProduct {
 		shots := []domain.Shot{
 			{Index: 1, StartSecond: 0, EndSecond: 3, Visual: "问题场景 + 结果预告", Voiceover: script.Hook, Subtitle: script.Hook, AssetType: "problem_hook", AssetHint: "真实问题场景或结果对比", Transition: "快速切入", Purpose: "建立需求"},

@@ -8,8 +8,8 @@ if (!sessionId) throw new Error("WINDOWS_BROWSER_BRIDGE_SESSION_ID is required")
 const client = new RPCClient({ ...config, token: process.env.WINDOWS_BROWSER_BRIDGE_TOKEN, sessionId });
 
 const call = (method, params = {}) => client.request(method, params);
-globalThis.useOrCreateTaskSpace = ref => call("taskSpace.use", { ref });
-globalThis.claimTaskSpace = ref => call("taskSpace.claim", { ref });
+globalThis.useOrCreateTaskSpace = (ref, platform = "") => call("taskSpace.use", { ref, platform });
+globalThis.claimTaskSpace = (ref, platform = "") => call("taskSpace.claim", { ref, platform });
 globalThis.listTabs = () => call("tabs.list");
 globalThis.switchTab = targetId => call("tab.switch", { targetId });
 globalThis.openOrReuseTab = (url, options) => call("tab.open", { url, options });
@@ -17,6 +17,8 @@ globalThis.pageInfo = () => call("page.info");
 globalThis.js = source => call("page.js", { source });
 globalThis.cdp = (method, params) => call("page.cdp", { method, params });
 globalThis.click = (target, options) => call("page.click", { target, options });
+globalThis.publishOnce = (expectedLabel, options = {}) => call("page.publish", { expectedLabel, authorized: options.authorized === true });
+globalThis.inspectPublication = () => call("page.inspect");
 globalThis.hover = (target, options) => call("page.hover", { target, options });
 globalThis.pressKey = key => call("page.press", { key });
 globalThis.uploadFile = (selector, filePath) => call("page.upload", { selector, path: filePath });

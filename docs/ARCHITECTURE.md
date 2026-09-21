@@ -4,7 +4,7 @@
 
 核心目标：用 Go + tRPC-Agent-Go 实现一个可观测、可扩展、可人工审核的 Agent workflow，把 OpenMontage 式端到端视频生产能力垂直化到商品种草、工具测评、知识内容和矩阵批量测试场景。
 
-当前实现状态：代码中的 `internal/agentkit` 是确定性的 GraphAgent、Tool、Artifact 占位适配层，并非真实的 tRPC-Agent-Go runtime；真实 tRPC-Agent-Go 仍属于后续接入计划。当前可运行主链路由 Go `net/http`、Engine、确定性 workflow、本地工具、导出器、可选渲染器和发布适配器组成。
+当前实现状态：代码中的 `internal/agentkit` 是确定性的 GraphAgent、Tool、Artifact 占位适配层，并非真实的 tRPC-Agent-Go runtime；真实 tRPC-Agent-Go 仍属于后续接入计划。当前可运行主链路由 Go `net/http`、Engine、确定性 workflow、本地工具、导出器、可选渲染器和既有发布适配器组成；新的异步 Distribution Run 由 SQLite ledger 驱动。
 
 ## 架构原则
 
@@ -28,7 +28,7 @@
    - 先实现确定性 workflow，让无模型环境也能跑通。
    - 再把节点升级为 tRPC-Agent-Go Agent / Graph / Tool / Memory / Eval。
 
-## ContentAtom 目标边界
+## ContentAtom Contract Boundary
 
 长期内容链路为：
 
@@ -38,7 +38,9 @@ Research -> Evidence / Contradiction / Historical Context -> Judgment
   -> Content Distribution Pipeline -> Render -> Publish -> Analytics
 ```
 
-`ContentAtom` 是 Judgment 层和内容分发层之间的目标契约。它使 Research/Judgment 的内部结构与现有视频生产、渲染、平台发布能力解耦；Offering、Research Report、Member Brief、Manual Content 或 Campaign 也可以先转换为 ContentAtom，再复用分发链路。P0 只记录边界，不定义正式 Go 类型，也不改变现有 workflow。
+`ContentAtom` 是 Judgment 层和内容分发层之间的正式 Go 契约，`DistributionRequest` 是异步入口，`DistributionRun` 是持久化执行记录。它使 Research/Judgment 的内部结构与现有视频生产、渲染、平台发布能力解耦；Offering、Research Report、Member Brief、Manual Content 或 Campaign 也可以先转换为 ContentAtom，再复用分发链路。
+
+当前边界是刻意不完整的：Offering 输入已能通过兼容路径生成确定性发布包；Research atom 在没有模型执行器时会阻塞；Media Worker 和 publication adapter 已由 Go Run 接线，但只有运行时配置完整时才会执行。因此 `package_ready` 只代表发布包就绪，`media_ready` 才代表媒体产物已登记，二者都不代表已经投稿；Analytics 仍未实现。
 
 正式架构决策见 [`docs/adr/0001-content-atom-boundary.md`](adr/0001-content-atom-boundary.md)。
 
@@ -65,12 +67,33 @@ internal/tools/             # 商品规整、模板、QA、素材和字幕工具
 internal/exporter/          # Markdown / JSON 发布包
 internal/render/            # OpenMontage 可选渲染适配
 internal/publisher/         # 平台发布注册表和官方适配器
-internal/store/             # 当前内存存储
+internal/distribution/      # 异步 Distribution facade 和单进程 worker
+internal/runstore/          # SQLite runs / events / artifacts ledger
+internal/research/          # source reader、证据采集和 OpenAI-compatible gateway adapter
+internal/publication/       # 持久化授权、发布、未知态和 reconcile 事务核心
+internal/egopublisher/      # Ego Lite draft/publish/reconcile adapter with durable references
+internal/store/             # 旧项目 / batch API 的内存存储
+web/                        # Vue 3 + Vite 运行和发布看板，不随 API 镜像部署
 docs/                       # 架构和技术规划
 data/                       # 本地运行时数据
 ```
 
-`internal/storage`、`internal/assets`、`internal/tts`、`internal/subtitle`、`internal/qa`、`web/`、`templates/` 以及 `data/projects/`、`data/assets/`、`data/exports/` 是后续演进方向或运行时目录，不代表当前已经存在的独立 Go 包或固定目录。
+`internal/storage`、`internal/assets`、`internal/tts`、`internal/subtitle`、`internal/qa`、`templates/` 以及 `data/projects/`、`data/assets/`、`data/exports/` 仍是后续演进方向或运行时目录，不代表当前已经存在的独立 Go 包或固定目录。
+
+## 异步 Distribution Run
+
+```text
+POST /api/v1/runs
+  -> normalize DistributionRequest
+  -> SQLite queued Run + idempotency record
+  -> single-process worker / lease / fencing
+  -> legacy deterministic workflow for Offering
+  -> package.json artifact + event ledger
+  -> package_ready | media_ready | blocked | failed
+  -> Publication candidate -> explicit authorization -> prepare -> commit/reconcile
+```
+
+Run API 支持查询、事件流、取消、恢复和重试。SQLite 负责服务重启后的 durable record、artifact manifest、lease 和 fencing；当前部署约束是单个活跃 worker，不能表述成多实例队列。
 
 ## Workflow 状态模型
 
@@ -329,7 +352,17 @@ POST /api/v1/projects/{id}/variants
 POST /api/v1/projects/{id}/export
 ```
 
-后续 API：
+当前异步 Run API：
+
+```text
+POST /api/v1/runs
+GET  /api/v1/runs
+GET  /api/v1/runs/{id}
+GET  /api/v1/runs/{id}/events
+POST /api/v1/runs/{id}/cancel|resume|retry
+```
+
+旧项目 API 仍保留以下扩展接口：
 
 ```text
 POST /api/v1/projects/{id}/voiceover
@@ -435,6 +468,8 @@ bash smoke/run_batch_smoke.sh
 - 查看和编辑脚本
 - 导出 Markdown / JSON
 - 指标回填表单
+
+当前 `web/` 已提供 Vue + Vite 的真实 Run、Research/Distribution 和 Publication 看板，可读取 runs、events、artifacts、候选发布、授权、提交、reconcile 结果和能力阻塞；它尚未接入 Go 服务静态托管，也不会伪造投稿成功。Publication 变更需要 bearer token 和独立确认，`unknown` 只能通过 reconcile 处理。
 
 ### v0.5 指标回流和 A/B 复盘
 

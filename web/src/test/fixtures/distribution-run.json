@@ -1,0 +1,47 @@
+{
+  "id": "run-offering-001",
+  "status": "package_ready",
+  "request": {
+    "idempotency_key": "web-fixture-001",
+    "offering": {
+      "kind": "service",
+      "name": "春季内容诊断",
+      "title": "",
+      "description": "为品牌梳理短视频内容机会",
+      "link": "",
+      "price": "",
+      "category": "",
+      "value_points": ["明确内容方向"],
+      "selling_points": [],
+      "problems": [],
+      "pain_points": [],
+      "target_audience": "品牌团队",
+      "usage_scenarios": [],
+      "assets": [],
+      "delivery_mode": "",
+      "proof_points": [],
+      "call_to_action": ""
+    },
+    "platform": "xiaohongshu",
+    "targets": [],
+    "template": "",
+    "variant_count": 0
+  },
+  "checkpoint": "package_ready",
+  "attempt": 1,
+  "artifacts": [
+    {
+      "id": "artifact-001",
+      "run_id": "run-offering-001",
+      "kind": "package",
+      "path": "runs/run-offering-001/package.zip",
+      "sha256": "abc123",
+      "metadata": {"media": "not_connected", "publish": "not_connected"},
+      "created_at": "2026-09-20T02:00:00Z"
+    }
+  ],
+  "created_at": "2026-09-20T01:58:00Z",
+  "updated_at": "2026-09-20T02:00:00Z",
+  "started_at": "2026-09-20T01:59:00Z",
+  "finished_at": "2026-09-20T02:00:00Z"
+}

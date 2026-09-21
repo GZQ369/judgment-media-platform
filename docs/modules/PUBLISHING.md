@@ -4,7 +4,7 @@
 
 ## 目标
 
-同一个项目可以在一次用户确认后请求发布到抖音、小红书和视频号。系统对外统一返回平台结果，但不会掩盖不同平台官方开放能力的差异。
+历史 project publishing API 曾允许一次确认后请求抖音、小红书和视频号；该兼容路径正在禁用，不能作为新的真实发布入口。当前正式入口是 `internal/publication` 的 Publication Orchestrator，allowlist 为抖音、小红书和 Bilibili，视频号不在该事务入口中。系统对外统一返回平台结果，但不会掩盖不同平台官方开放能力的差异。
 
 状态含义：
 
@@ -34,10 +34,11 @@
 ### 小红书
 
 - 模式：`client_handoff`。
-- 使用小红书 Share Open SDK 唤起官方客户端发布编辑器。
-- 环境变量：`XHS_SHARE_APP_KEY`。
+- 旧 `internal/publisher` contract 生成可由已注册客户端消费的小红书 Share Open SDK 交接数据；服务端不直接唤起编辑器或完成投稿。
+- 环境变量：`XHS_SHARE_APP_KEY`，只用于该客户端交接，不是服务端一键发布凭据。
 - API 返回 `client_payload`，由已注册的 iOS、Android、HarmonyOS 或 JavaScript 客户端消费。
 - 用户必须在小红书客户端完成最终确认；标题和正文自动填充受平台规则限制。
+- Publication Orchestrator 的一次性授权 commit 不选用此官方交接 adapter；当前小红书提交路径是 Ego，未配置 Ego 时返回能力阻塞。
 
 官方文档：
 
@@ -56,7 +57,9 @@
 
 当前未发现面向普通创作者的公开服务端视频投稿 API，因此视频号不能在合规前提下实现与抖音完全相同的静默服务端代发。
 
-## API
+## Legacy API（兼容、逐步禁用）
+
+以下接口只描述旧 `internal/publisher` contract，不代表已通过新的发布安全门禁：
 
 查看平台能力：
 
@@ -79,7 +82,7 @@ Content-Type: application/json
 }
 ```
 
-`confirm=true` 表示用户对本次发布动作作了明确确认。标题、正文和标签不填写时会使用项目 brief；也可通过 `overrides` 为每个平台覆盖。
+`confirm=true` 只是旧接口的兼容字段。新的发布必须通过 bearer token、候选校验、独立授权确认、服务端 commit `confirm=true`、精确 fingerprint 和平台证据校验；不能直接调用旧接口绕过 Publication Orchestrator。标题、正文和标签不填写时会使用项目 brief；也可通过 `overrides` 为每个平台覆盖。
 
 ## 扩展平台
 

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.part
+out/
+output/
+render/
+segments/
+pcm/
+narration.*
+subtitles.*
+events.json
+artifact-manifest.json
+remotion-props.json

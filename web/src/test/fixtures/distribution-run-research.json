@@ -1,0 +1,44 @@
+{
+  "id": "run-research-001",
+  "status": "cancelled",
+  "request": {
+    "atom": {
+      "schema_version": "1.0",
+      "revision": 1,
+      "kind": "research",
+      "source_type": "web",
+      "source_id": "web-ui",
+      "thesis_id": "研究型内容",
+      "audience": "内容团队",
+      "angle": "",
+      "hook": "",
+      "claim": "研究型内容需要模型执行器",
+      "evidence_ids": [],
+      "counter_point": "",
+      "insight": "",
+      "desired_action": "",
+      "cta": "",
+      "priority": 0
+    },
+    "platform": "douyin",
+    "targets": [],
+    "template": "",
+    "variant_count": 0
+  },
+  "checkpoint": "capability_blocked",
+  "attempt": 1,
+  "capability_block": {
+    "code": "CAPABILITY_UNAVAILABLE",
+    "capability": "research_model_generation",
+    "message": "research atoms require a configured model executor; no model is connected",
+    "retryable": true
+  },
+  "error": {
+    "code": "RUN_CANCELLED",
+    "message": "run cancelled before research model execution",
+    "retryable": true
+  },
+  "artifacts": [],
+  "created_at": "2026-09-20T02:05:00Z",
+  "updated_at": "2026-09-20T02:05:00Z"
+}

@@ -35,6 +35,8 @@ secrets.*.json
 
 # local agent configuration and machine reports
 .agents/
+.tools/
+skills-lock.json
 system-power-report.html
 
 # local media and generated assets

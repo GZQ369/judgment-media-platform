@@ -160,10 +160,10 @@ func TestHealthCheckKeepsJSONAndMiddlewareHeaders(t *testing.T) {
 	if resp.Header().Get(requestIDHeader) == "" {
 		t.Fatal("health response is missing request ID")
 	}
-	if resp.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatalf("health response lost CORS header: %q", resp.Header().Get("Access-Control-Allow-Origin"))
+	if resp.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("health response unexpectedly emitted CORS origin: %q", resp.Header().Get("Access-Control-Allow-Origin"))
 	}
-	if resp.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID" {
+	if resp.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID, Authorization" {
 		t.Fatalf("health response has unexpected allowed headers: %q", resp.Header().Get("Access-Control-Allow-Headers"))
 	}
 	if resp.Header().Get("Access-Control-Allow-Methods") != "GET,POST,OPTIONS" {
@@ -192,7 +192,7 @@ func TestRoutesHandleCORSPreflightForRequestID(t *testing.T) {
 	req.Header.Set("Access-Control-Request-Headers", "content-type, x-request-id")
 	resp := httptest.NewRecorder()
 
-	NewHandler(e).Routes().ServeHTTP(resp, req)
+	NewHandlerWithServicesAndSecurity(e, nil, nil, nil, SecurityOptions{AllowedOrigins: []string{"https://example.test"}}).Routes().ServeHTTP(resp, req)
 
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("preflight status=%d body=%q", resp.Code, resp.Body.String())
@@ -200,10 +200,10 @@ func TestRoutesHandleCORSPreflightForRequestID(t *testing.T) {
 	if resp.Body.Len() != 0 {
 		t.Fatalf("preflight body=%q, want empty", resp.Body.String())
 	}
-	if resp.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatalf("preflight origin=%q, want *", resp.Header().Get("Access-Control-Allow-Origin"))
+	if resp.Header().Get("Access-Control-Allow-Origin") != "https://example.test" {
+		t.Fatalf("preflight origin=%q, want configured origin", resp.Header().Get("Access-Control-Allow-Origin"))
 	}
-	if resp.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID" {
+	if resp.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID, Authorization" {
 		t.Fatalf("preflight allowed headers=%q", resp.Header().Get("Access-Control-Allow-Headers"))
 	}
 	if resp.Header().Get("Access-Control-Allow-Methods") != "GET,POST,OPTIONS" {
@@ -211,6 +211,44 @@ func TestRoutesHandleCORSPreflightForRequestID(t *testing.T) {
 	}
 	if resp.Header().Get("Access-Control-Expose-Headers") != requestIDHeader {
 		t.Fatalf("preflight exposed headers=%q", resp.Header().Get("Access-Control-Expose-Headers"))
+	}
+}
+
+func TestRunWriteOriginContractBehindDevProxy(t *testing.T) {
+	tests := []struct {
+		name           string
+		origin         string
+		site           string
+		allowedOrigins []string
+		wantStatus     int
+		wantError      string
+	}{
+		{name: "same-origin proxy write", site: "same-origin", wantStatus: http.StatusNoContent},
+		{name: "foreign origin", origin: "https://foreign.example", site: "cross-site", wantStatus: http.StatusForbidden, wantError: "origin is not allowed"},
+		{name: "allowlisted origin with rewritten host", origin: "http://127.0.0.1:5192", site: "same-origin", allowedOrigins: []string{"http://127.0.0.1:5192"}, wantStatus: http.StatusForbidden, wantError: "cross-origin run write is not allowed"},
+		{name: "cross-site metadata without origin", site: "cross-site", wantStatus: http.StatusForbidden, wantError: "cross-site run write is not allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := cors(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if runWriteAllowed(w, r) {
+					w.WriteHeader(http.StatusNoContent)
+				}
+			}), tt.allowedOrigins)
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8088/api/v1/runs", nil)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tt.site)
+			}
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			if resp.Code != tt.wantStatus || (tt.wantError != "" && !strings.Contains(resp.Body.String(), tt.wantError)) {
+				t.Fatalf("status=%d body=%s, want status=%d error=%q", resp.Code, resp.Body.String(), tt.wantStatus, tt.wantError)
+			}
+		})
 	}
 }
 

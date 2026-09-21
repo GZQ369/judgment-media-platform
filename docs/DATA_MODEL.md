@@ -6,6 +6,7 @@
 
 ```text
 internal/domain/types.go
+internal/domain/distribution.go
 ```
 
 ## 1. Platform
@@ -13,10 +14,11 @@ internal/domain/types.go
 ```text
 xiaohongshu
 douyin
-wechat_channels
+wechat_channels      # 旧项目 / batch 模板保留
+bilibili             # 新 Distribution Run 合同可识别，当前会阻塞
 ```
 
-当前稳定主路径是小红书和抖音。视频号模板是后续扩展占位。
+旧同步 workflow 的稳定主路径是小红书和抖音。新的异步 Run 当前支持小红书、抖音和 B 站的请求校验；这不表示三个平台已有真实发布 adapter。
 
 ## 2. Template
 
@@ -34,7 +36,44 @@ wechat_channels
 - `douyin_product_hook`
 - `wechat_channels_product_trust`
 
-## 3. OfferingInput
+## 3. ContentAtom
+
+`ContentAtom` 是 Judgment 与 Distribution 之间的标准输入，核心字段包括：
+
+- `schema_version`、`revision`、`id`、`kind`
+- `source_type`、`source_id`、`thesis_id`
+- `audience`、`angle`、`hook`、`claim`
+- `evidence_ids`、`counter_point`、`insight`
+- `desired_action`、`cta`、`priority`
+
+`kind` 当前为 `offering` 或 `research`。为迁移旧输入，类型暂时保留 `title`、`summary`、`body`、`sources`、`offering` 和 `research` 字段；这是一条兼容路径，不是对 Judgment 内部结构的依赖。当前 Run admission 只做输入互斥、平台 / target 数量和 `kind` 等基础校验，不代表所有 thesis、claim、evidence 字段已经由 Judgment schema 完整校验。
+
+## 4. DistributionRequest
+
+异步 Run 的请求合同：
+
+- `idempotency_key`：相同请求重试时复用已有 Run。
+- `atom`：标准 `ContentAtom`，与 `offering` 二选一。
+- `offering`：旧 Offering 输入，当前由 Distribution execution compatibility path 规整；正式独立的 Legacy Offering Adapter 仍待提取。
+- `platform`：单平台兼容字段。
+- `targets`：未来的多账号 / 多平台扩展；当前最多一个目标。
+- `template`、`variant_count`：旧确定性 workflow 的执行参数。
+
+新请求目前只接受小红书、抖音和 B 站；视频号仍保留在旧 API 模型中，不接受新的异步 Run。
+
+## 5. DistributionRun、RunEvent 和 Artifact
+
+`DistributionRun` 是 SQLite 中的 durable public view：
+
+- `id`、`status`、`request`、`checkpoint`、`attempt`
+- `capability_block`、`error`
+- `artifacts`、`created_at`、`updated_at`、`started_at`、`finished_at`
+
+状态为 `queued`、`running`、`blocked`、`package_ready`、`failed` 或 `cancelled`。`package_ready` 仅表示当前发布包 artifact 已写入并登记，不表示媒体渲染或平台投稿完成。`RunEvent` 是追加事件，`Artifact` 保存本地路径、SHA-256 和元数据。
+
+SQLite ledger 还保存幂等键、worker lease、fencing token 和启动恢复所需的状态。当前只保证单进程活跃 worker。
+
+## 6. OfferingInput
 
 商品、服务或问题解决能力的统一输入：
 
@@ -58,7 +97,7 @@ wechat_channels
 - 输入可以不完整，workflow 会做 deterministic fallback。
 - 旧 `ProductInput` 是类型别名，`title` / `selling_points` / `pain_points` 会同步到新字段。
 
-## 4. VideoProject
+## 7. VideoProject
 
 单个商品/选题的视频生产项目：
 
@@ -86,7 +125,7 @@ wechat_channels
 - `rendered`
 - `render_failed`
 
-## 5. PublishingBrief
+## 8. PublishingBrief
 
 运营审核的核心产物：
 
@@ -111,7 +150,7 @@ MVP 要求每个成功项目至少：
 - 1 份分镜。
 - 1 份素材计划。
 
-## 6. Variant 和 VariantMetric
+## 9. Variant 和 VariantMetric
 
 `Variant` 是 A/B 测试版本，覆盖：
 
@@ -136,7 +175,7 @@ MVP 要求每个成功项目至少：
 
 后续复盘模块应按 variant 维度比较标题、hook、封面、脚本结构和 CTA。
 
-## 7. BatchRunRequest
+## 10. BatchRunRequest
 
 批量运行请求：
 
@@ -159,7 +198,7 @@ MVP 要求每个成功项目至少：
 - `export_formats` 默认 `markdown` 和 `json`。
 - `render=false` 是稳定主路径。
 
-## 8. BatchJob / BatchItem
+## 11. BatchJob / BatchItem
 
 `BatchJob` 记录一次批量生产任务：
 
@@ -202,7 +241,7 @@ Batch 状态：
 - 至少一个成功时，batch 可以是 `completed` 或 `completed_with_errors`。
 - 全部失败才是 `failed`。
 
-## 9. BatchReport
+## 12. BatchReport
 
 写入 `batch_report.json` 的结构化报告，用于后续前端或自动复盘读取。
 
@@ -216,7 +255,7 @@ Batch 状态：
 
 Markdown 版本 `batch_report.md` 面向运营人员阅读。
 
-## 10. RenderResult
+## 13. RenderResult
 
 OpenMontage 或后续渲染模块返回：
 
@@ -227,9 +266,9 @@ OpenMontage 或后续渲染模块返回：
 
 渲染结果不能成为发布包生成的前置条件。
 
-## 11. 当前持久化边界
+## 14. 当前持久化边界
 
-当前 store 是内存实现：
+旧 project / batch store 仍是内存实现：
 
 ```text
 internal/store/memory.go
@@ -240,13 +279,15 @@ internal/store/memory.go
 - 服务重启后内存里的 projects / batches 会清空。
 - 但 batch 导出的 Markdown / JSON 文件会保留在 `data/batches/`。
 
-后续 SQLite 方案建议：
+新的 Distribution Run 使用 `internal/runstore` 的 SQLite ledger，保存 runs、events、artifacts、幂等键和 lease。它与旧 project / batch store 并存，不能把新 Run 的持久化能力推广成所有旧 API 都已持久化。
+
+旧 project / batch 的后续 SQLite 方案建议：
 
 - projects、briefs、variants、metrics、batches 入库。
 - publish package 和视频文件仍走文件系统。
 - DB 只记录 artifact path 和 metadata。
 
-## 12. 输出路径约定
+## 15. 输出路径约定
 
 批量输出：
 

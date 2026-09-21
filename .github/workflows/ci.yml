@@ -32,5 +32,76 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Test with race detector
+        run: go test -race ./...
+
       - name: Build
         run: go build ./...
+
+      - name: Python media worker tests
+        run: python -m unittest discover -s tools/media-worker/tests
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser bridge dependencies
+        working-directory: tools/windows-browser-bridge
+        run: npm ci
+
+      - name: Test browser bridge
+        working-directory: tools/windows-browser-bridge
+        run: npm test
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Test web
+        working-directory: web
+        run: npm test
+
+      - name: Build web
+        working-directory: web
+        run: npm run build
+
+      - name: Build Docker image
+        run: docker build --tag judgment-media-platform:ci .
+
+      - name: Validate Compose default binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+          assert '"${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8088}:8088"' in compose
+          assert 'ADDR: "0.0.0.0:8088"' in compose
+          print("Compose default keeps host binding on 127.0.0.1 and container binding on 0.0.0.0.")
+          PY
+          docker compose config
+
+      - name: Smoke test Docker Compose health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose_project="judgment-media-platform-ci"
+          cleanup() {
+            docker compose --project-name "${compose_project}" down --volumes >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker compose --project-name "${compose_project}" up --build --detach
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8088/health; then
+              printf '\nDocker Compose health smoke passed with the default loopback host binding.\n'
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker compose --project-name "${compose_project}" logs || true
+          printf 'Docker Compose health smoke failed after retries.\n' >&2
+          exit 1

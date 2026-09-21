@@ -56,6 +56,7 @@ test("Bridge forwards each session's task space to every page operation", async 
     activePageId: id => spaces.get(id)?.active,
     js: async id => { calls.push(["js", id]); return `space-${id}`; },
     click: async id => { calls.push(["click", id]); return { ok: true }; },
+    publishOnce: async (id, label, authorized) => { calls.push(["publish", id, label, authorized]); return { ok: true, finalPublishClicked: true }; },
     close: async () => {},
   };
   const bridge = new BrowserBridge({ config, driver }); await bridge.start();
@@ -64,10 +65,12 @@ test("Bridge forwards each session's task space to every page operation", async 
   await Promise.all([bridge.dispatch("tab.open", { url: "data:text/plain,alpha" }, a), bridge.dispatch("tab.open", { url: "data:text/plain,beta" }, b)]);
   const [alpha, beta] = await Promise.all([bridge.dispatch("page.js", { source: "() => location.href" }, a), bridge.dispatch("page.js", { source: "() => location.href" }, b)]);
   await Promise.all([bridge.dispatch("page.click", { target: [1, 1] }, a), bridge.dispatch("page.click", { target: [2, 2] }, b)]);
+  await bridge.dispatch("page.publish", { expectedLabel: "发布", authorized: true }, a);
   assert.equal(alpha, "space-1"); assert.equal(beta, "space-2");
   assert.deepEqual((await bridge.dispatch("tabs.list", {}, a)).map(tab => tab.url), ["data:text/plain,alpha"]);
   assert.deepEqual((await bridge.dispatch("tabs.list", {}, b)).map(tab => tab.url), ["data:text/plain,beta"]);
   assert.ok(calls.some(([method, id]) => method === "click" && id === 1)); assert.ok(calls.some(([method, id]) => method === "click" && id === 2));
+  assert.ok(calls.some(([method, id, label, authorized]) => method === "publish" && id === 1 && label === "发布" && authorized === true));
   await bridge.stop();
 });
 

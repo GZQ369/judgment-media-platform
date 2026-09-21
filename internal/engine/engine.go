@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	ErrProjectNotFound = errors.New("project not found")
-	ErrBatchNotFound   = errors.New("batch not found")
-	ErrInvalidBatch    = errors.New("invalid batch request")
+	ErrProjectNotFound                 = errors.New("project not found")
+	ErrBatchNotFound                   = errors.New("batch not found")
+	ErrInvalidBatch                    = errors.New("invalid batch request")
+	ErrPublicationOrchestratorRequired = errors.New("legacy project publish API is disabled; use the publication orchestrator transaction API")
 )
 
 // Engine 是 HTTP API 调用的应用服务层，负责串联 workflow、exporter、render 和 store。
@@ -338,57 +339,14 @@ func (e *Engine) PublishingCapabilities(ctx context.Context) []domain.PlatformPu
 
 // PublishProject 在一次显式确认后向一个或多个平台执行发布或官方客户端交接。
 func (e *Engine) PublishProject(ctx context.Context, projectID string, req domain.PublishProjectRequest) (domain.PublishProjectResult, error) {
-	project, ok := e.store.Project(projectID)
-	if !ok {
-		return domain.PublishProjectResult{}, ErrProjectNotFound
-	}
-	if !req.Confirm {
-		return domain.PublishProjectResult{}, publisher.ErrConfirmationRequired
-	}
-	platforms := normalizePublishPlatforms(req, project.Platform)
-	if req.VideoPath == "" && project.Render != nil {
-		req.VideoPath = project.Render.VideoPath
-	}
-	if project.Brief != nil {
-		if req.Title == "" && len(project.Brief.TitleOptions) > 0 {
-			req.Title = project.Brief.TitleOptions[0]
-		}
-		if req.Caption == "" {
-			req.Caption = project.Brief.Caption
-		}
-		if len(req.Tags) == 0 {
-			req.Tags = append([]string(nil), project.Brief.Tags...)
-		}
-	}
-	if req.Title == "" {
-		req.Title = tools.DefaultString(project.Offering.Name, project.Product.Title)
-	}
-
-	result := domain.PublishProjectResult{ProjectID: projectID, Results: make([]domain.PublicationResult, 0, len(platforms))}
-	for _, platform := range platforms {
-		platformReq := req
-		if override, exists := req.Overrides[platform]; exists {
-			platformReq.Title = tools.DefaultString(override.Title, req.Title)
-			platformReq.Caption = tools.DefaultString(override.Caption, req.Caption)
-			if len(override.Tags) > 0 {
-				platformReq.Tags = override.Tags
-			}
-		}
-		publication, err := e.publishers.Publish(ctx, platform, platformReq)
-		if err != nil {
-			publication = domain.PublicationResult{
-				Platform:    platform,
-				Status:      domain.PublicationStatusFailed,
-				Message:     err.Error(),
-				SubmittedAt: time.Now().UTC(),
-			}
-		}
-		result.Results = append(result.Results, publication)
-		project.Publications = append(project.Publications, publication)
-	}
-	project.UpdatedAt = time.Now().UTC()
-	e.store.SaveProject(project)
-	return result, nil
+	// Keep the legacy method source-compatible for callers that still compile
+	// against the engine, but make it impossible to reach a Publisher from the
+	// old project endpoint. Only publication.Service may consume authorization,
+	// reserve a package fingerprint, and call an adapter.
+	_ = ctx
+	_ = projectID
+	_ = req
+	return domain.PublishProjectResult{}, ErrPublicationOrchestratorRequired
 }
 
 func normalizePublishPlatforms(req domain.PublishProjectRequest, fallback domain.Platform) []domain.Platform {

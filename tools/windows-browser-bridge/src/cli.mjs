@@ -52,6 +52,9 @@ export async function runNodeJS({ stdin = process.stdin, stdout = process.stdout
   const sessionClient = new RPCClient({ ...config, token: authToken });
   let sessionId = null;
   let scriptFile = null;
+  let exitCode = 1;
+  let runError = null;
+  let closeError = null;
   try {
     const opened = await openSessionFn(sessionClient);
     sessionId = opened?.sessionId;
@@ -59,12 +62,30 @@ export async function runNodeJS({ stdin = process.stdin, stdout = process.stdout
     scriptFile = path.join(config.runsDir, `task-${process.pid}-${crypto.randomUUID()}.mjs`);
     await fs.writeFile(scriptFile, script, "utf8");
     const child = spawn(process.execPath, ["--import", pathToFileURL(bootstrapPath).href, scriptFile], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, WINDOWS_BROWSER_BRIDGE_TOKEN: authToken, WINDOWS_BROWSER_BRIDGE_SESSION_ID: sessionId } });
-    child.stdout.pipe(stdout); child.stderr.pipe(stderr);
-    return await new Promise(resolve => { child.on("error", error => { stderr.write(`${error.stack || error}\n`); resolve(1); }); child.on("close", value => resolve(value ?? 1)); });
+    child.stdout.pipe(stdout, { end: false }); child.stderr.pipe(stderr, { end: false });
+    exitCode = await new Promise(resolve => { child.on("error", error => { stderr.write(`${error.stack || error}\n`); resolve(1); }); child.on("close", value => resolve(value ?? 1)); });
+  } catch (error) {
+    runError = error;
   } finally {
     if (scriptFile) await fs.rm(scriptFile, { force: true });
-    if (sessionId) await closeSessionFn(config, authToken, sessionId).catch(() => {});
+    if (sessionId) {
+      try {
+        const closed = await closeSessionFn(config, authToken, sessionId);
+        if (closed?.ok === false || closed?.persistenceError) {
+          const reason = closed.persistenceError || (closed.drainTimedOut ? "in-flight operation drain timed out" : "unknown error");
+          closeError = new Error(`session close failed: ${reason}`);
+        }
+      } catch (error) {
+        closeError = error;
+      }
+    }
   }
+  if (closeError) {
+    stderr.write(`${closeError.stack || closeError}\n`);
+  }
+  if (runError) throw runError;
+  if (closeError) return 1;
+  return exitCode;
 }
 
 export async function main(argv = process.argv.slice(2)) {

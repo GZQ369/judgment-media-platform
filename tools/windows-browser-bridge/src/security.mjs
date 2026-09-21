@@ -51,20 +51,26 @@ export function guardSource() {
       const buttonish = element.matches("button, input[type=submit], [role=button], .d-button, .bcc-button") || /button|btn|submit/i.test(String(element.className || ""));
       return buttonish ? text : "";
     };
-    const state = window[key] || { armed: true, version: 1, blockedAttempts: [] };
+    const state = window[key] || { armed: true, version: 2, blockedAttempts: [], authorizedAttempts: [] };
     const block = event => {
       const path = typeof event.composedPath === "function" ? event.composedPath() : [];
       const match = [event.submitter, ...path, event.target].find(element => finalText.test(label(element)));
       if (!match) return;
+      const matchedLabel = label(match);
+      const authorization = state.authorization;
+      if (authorization && authorization.label === matchedLabel && Date.now() <= authorization.expiresAt) {
+        state.authorizedAttempts.push({ type: event.type, label: matchedLabel, at: new Date().toISOString() });
+        return;
+      }
       event.preventDefault(); event.stopImmediatePropagation();
-      state.blockedAttempts.push({ type: event.type, label: label(match), at: new Date().toISOString() });
+      state.blockedAttempts.push({ type: event.type, label: matchedLabel, at: new Date().toISOString() });
     };
     if (!state.listenersInstalled) {
       document.addEventListener("click", block, true);
       document.addEventListener("submit", block, true);
       state.listenersInstalled = true;
     }
-    state.armed = true; state.version = 1; window[key] = state;
-    return { ok: true, armed: true, version: 1, blockedAttempts: state.blockedAttempts.length };
+    state.armed = true; state.version = 2; state.authorization = null; window[key] = state;
+    return { ok: true, armed: true, version: 2, blockedAttempts: state.blockedAttempts.length };
   })()`;
 }

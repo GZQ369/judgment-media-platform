@@ -2,7 +2,7 @@
 
 本项目是一个本地化内容生产与分发工作流系统，当前以短视频为 MVP，面向抖音 / 小红书 / 视频号矩阵运营、电商商家、MCN、小型内容团队和知识内容创作者。
 
-> 以 `ContentAtom` 为内容契约，将 Research/Judgment 与可复用的 Content Distribution Pipeline 解耦；当前使用 Go 和确定性 workflow，未来接入 tRPC-Agent-Go。
+> 以 `ContentAtom` 为正式内容契约，将 Research/Judgment 与可复用的 Content Distribution Pipeline 解耦；当前主链由 Go、确定性 workflow 和可选的 OpenAI-compatible gateway 组成，tRPC-Agent-Go 仍未接入。
 
 ## 边界
 
@@ -68,13 +68,13 @@ MVP 阶段采用“AI 生成 + 人工确认”的半自动模式，避免全自�
 ## 技术路线
 
 - 后端：Go + net/http 起步，不使用 FastAPI
-- Agent workflow：当前为确定性 `internal/agentkit` / `internal/workflow` 占位实现，tRPC-Agent-Go 为规划中的编排运行时
+- Agent workflow：`internal/workflow` 和 `internal/agentkit` 提供确定性实现与适配边界；Research/Judgment parent pipeline 已接线，可配置 OpenAI-compatible gateway，但仓库不包含真实模型凭据，tRPC-Agent-Go 仍是后续运行时
 - 本地模型：Ollama / OpenAI-compatible endpoint，可插拔
 - 配音：Edge TTS 起步，后续可接 GPT-SoVITS / CosyVoice
 - 字幕：SRT 起步，后续支持 ASS 花字字幕
 - 渲染：当前保留 OpenMontage 可选路径；Docker 不安装 OpenMontage、Node.js、Python 或 FFmpeg
-- 存储：当前为内存存储并将运行产物写入配置的数据目录，后续接入 SQLite
-- 前端：Go 内置静态 Web 控制台起步
+- 存储：新的 Distribution Run 使用配置数据目录中的 SQLite；旧项目 / batch API 仍使用内存 store 并将发布包写入文件
+- 前端：`web/` 是独立的 Vue 3 + Vite 运行看板，当前通过开发代理访问 Go API，尚未打进 Docker 镜像
 
 ## OpenMontage 参考点
 
@@ -114,7 +114,21 @@ Research -> Evidence -> Judgment -> Content Thesis -> ContentAtom
   -> Content Distribution Pipeline -> Render -> Publish -> Analytics
 ```
 
-Judgment 不直接生成平台专属脚本或调用 Publisher。商品、服务、能力以及未来的研究报告、会员简报和活动内容，都应先转换为 `ContentAtom`，再复用同一套分发流程。P0 只记录边界，正式 `ContentAtom` 类型和 facade 属于后续阶段。
+`ContentAtom`、`DistributionRequest` 和 `DistributionRun` 已作为正式异步分发契约落地。Research/Judgment parent pipeline 已能在配置 gateway 时编排 `ResearchTopic -> Judgment -> ContentAtom[] -> DistributionRun[]`；未配置真实 gateway 或模型不可用时会如实进入 capability blocker。Offering、Research Report、Member Brief、Manual Content 或 Campaign 都可以先转换为 `ContentAtom`，再复用分发链路。Judgment 不直接生成平台专属脚本或调用 Publisher；完整的 Research -> Judgment -> ContentAtom -> 媒体生产 -> 多平台真实发布 -> Analytics 自动闭环尚未完成。
+
+### 异步 Run API
+
+```text
+POST /api/v1/runs
+GET  /api/v1/runs
+GET  /api/v1/runs/{id}
+GET  /api/v1/runs/{id}/events
+POST /api/v1/runs/{id}/cancel
+POST /api/v1/runs/{id}/resume
+POST /api/v1/runs/{id}/retry
+```
+
+Run 记录、事件和 artifact manifest 持久化到 SQLite。Offering Run 可以生成本地发布包；配置 Media Worker 后可继续到 `media_ready`。Publication Orchestrator 只接受已登记的 `media_ready` artifact；抖音提交需要官方凭据或本机 Ego bridge，小红书和 Bilibili 提交需要 Ego bridge。草稿、媒体就绪或未知结果不会被伪造成已发布。
 
 ## 计划 API
 
@@ -176,37 +190,45 @@ curl http://127.0.0.1:8088/health
 
 ## 当前状态
 
-当前代码已经具备可运行的后端 MVP 主路径：
+当前代码已经具备可运行的后端 MVP 主路径，以及一条持久化的异步 Run 主路径：
 
 - Go `net/http` API
+- SQLite-backed `DistributionRun` ledger、事件流、幂等键和 cancel/resume/retry 操作
+- `ContentAtom` / `DistributionRequest` / `DistributionRun` 类型，以及 Offering 兼容输入
 - 视频项目、商品/服务/能力 Offering、脚本、分镜、素材计划、发布包、发布状态、A/B 变体和 batch job domain
 - `internal/workflow` 确定性节点
 - `internal/agentkit` 确定性 GraphAgent / Tool / Artifact 适配边界，占位而非真实 tRPC-Agent-Go runtime
 - 小红书与抖音平台模板差异化
 - 同步 batch 运行、Markdown/JSON 文件导出和 batch report
 - OpenMontage 可选渲染路径；Docker 仅支持 API 和无渲染 workflow，不含完整渲染依赖
-- 抖音官方 API 投稿、小红书官方分享 SDK 交接、视频号官方助手辅助发布，以及可扩展 Publisher 注册表
+- `internal/publication` 已接入异步 Run 的受控发布事务；Ego adapter 是小红书和 Bilibili 当前的提交路径，也是抖音未配置官方 adapter 时的 fallback。小红书 `XHS_SHARE_APP_KEY` 只支持旧 publisher contract 的客户端交接，不能完成一键发布，也不会被选为一次性授权 commit 的 adapter。真实线上投稿尚未核验。旧项目直发接口保留兼容代码但正在禁用，不能绕过 Publication Orchestrator
 
-后续重点是持久化、Judgment/ContentAtom 契约、真实 tRPC-Agent-Go GraphAgent 接入、Content Distribution Pipeline facade、Edge TTS / 字幕增强、FFmpeg 或 OpenMontage 成片稳定化，以及指标回填复盘。
+后续重点是配置并验证真实 Research/Judgment 模型、tRPC-Agent-Go 隔离适配器、平台 OAuth 与审核回查、Analytics 回流和调度器。Media Worker、Publication Orchestrator、Legacy Offering Adapter、Ego 与 Bilibili 适配代码已经存在，但不等于真实平台投稿已验证。
 
 ## Windows Browser Draft Runtime
 
-个人创作者可通过独立的 Windows 浏览器草稿运行时，把现有视频发布包准备到抖音、小红书、视频号和 Bilibili 的创作者页面。它复用专用浏览器登录态，默认停在最终发布前，不改变现有 workflow/render/exporter/publisher 业务行为。安装与安全边界见 [WINDOWS_BROWSER_BRIDGE.md](docs/modules/WINDOWS_BROWSER_BRIDGE.md)。
+个人创作者可通过独立的 Windows 浏览器运行时，把现有视频发布包准备到抖音、小红书和 Bilibili 的创作者页面；视频号不属于当前 Publication Orchestrator allowlist。Ego adapter 默认先准备草稿，只有服务端一次性授权、精确 fingerprint 和第二次确认都通过后才允许最终发布。它复用专用浏览器登录态，安装与安全边界见 [WINDOWS_BROWSER_BRIDGE.md](docs/modules/WINDOWS_BROWSER_BRIDGE.md)。
 
 ## Docker
 
-Docker 以非 root 用户运行 API，默认监听 `0.0.0.0:8088`，并通过 Compose named volume `video-agent-data` 持久化容器 `/app/data`。镜像不包含 OpenMontage、Node.js、Python、FFmpeg，也不包含平台账号授权，因此只保证健康检查和无渲染确定性 workflow。
+Docker 以非 root 用户运行 API；Compose 默认把宿主机 `127.0.0.1:8088` 映射到容器的 `8088` 端口，而容器内固定监听 `0.0.0.0:8088`，确保端口转发可用。若明确需要局域网访问，启动前显式设置 `HTTP_BIND_ADDRESS=0.0.0.0`；这会把 API 暴露给局域网，仍需按部署环境配置防火墙、反向代理和发布 API 鉴权。镜像不包含 OpenMontage、Node.js、Python、FFmpeg，也不包含平台账号授权，因此只保证健康检查和无渲染确定性 workflow。本机当前没有 Docker 命令，Docker 验收依赖 CI 或具备 Docker 的环境。
 
 ```bash
 docker compose up --build
 curl http://127.0.0.1:8088/health
 ```
 
-Compose 使用独立的 `CONTAINER_ADDR` 注入容器内的 `ADDR`，因此本地 `.env` 可以继续保留 `ADDR=127.0.0.1:8088`，不会导致容器只监听自身回环地址。所有 Compose 环境变量都有默认值，不要求本地存在 `.env`；可复制 `.env.example` 后按需覆盖。
+Compose 固定向容器注入 `ADDR=0.0.0.0:8088`，不读取本地 `ADDR` 或 `CONTAINER_ADDR`，避免容器误监听自身回环地址。宿主绑定通过 `HTTP_BIND_ADDRESS` 控制，默认是 `127.0.0.1`；局域网部署可显式使用 `HTTP_BIND_ADDRESS=0.0.0.0 docker compose up --build`。所有 Compose 环境变量都有默认值，不要求本地存在 `.env`；可复制 `.env.example` 后按需覆盖。
+
+## Publication Safety
+
+Publication mutation endpoints require a server-side `PUBLICATION_API_TOKEN` and a `Bearer` token. The dashboard keeps the token only in page memory and never writes it to a run or export artifact. Authorization and final commit are separate confirmations. The commit is bound to an exact fingerprint covering the selected video, every platform cover asset, title/tags/copy, account, platform, run, variant and policy; any change invalidates preparation.
+
+If an adapter times out or returns insufficient evidence, the publication becomes `unknown`. It cannot be retried by calling commit again; only read-oriented `reconcile` may query the saved external reference. A publication is shown as submitted/reviewing/published only when platform-specific evidence includes a bound external ID or allow-listed URL. A draft click, `READY` signal, generic success text, or `media_ready` status is not proof of publication.
 
 ## 批量视频工厂 MVP
 
-当前后端已新增同步 batch 主路径：
+后端保留旧的同步 batch 主路径，并新增持久化异步 Run 主路径：
 
 ```text
 GET  /api/v1/batches

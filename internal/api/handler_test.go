@@ -2,13 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/GZQ369/judgment-media-platform/internal/distribution"
 	"github.com/GZQ369/judgment-media-platform/internal/domain"
 	"github.com/GZQ369/judgment-media-platform/internal/engine"
+	"github.com/GZQ369/judgment-media-platform/internal/runstore"
 	"github.com/GZQ369/judgment-media-platform/internal/store"
 )
 
@@ -94,23 +98,102 @@ func TestPublishEndpointReturnsPerPlatformTruthfulStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project.ID+"/publish", bytes.NewReader(payload))
 	resp := httptest.NewRecorder()
 	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
+	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
-	var result domain.PublishProjectResult
+	var result map[string]string
 	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode publish result: %v", err)
 	}
-	if len(result.Results) != 2 {
-		t.Fatalf("expected two platform results: %+v", result)
-	}
-	for _, publication := range result.Results {
-		if publication.Status != domain.PublicationStatusActionRequired {
-			t.Fatalf("handoff platform must not be reported as published: %+v", publication)
-		}
+	if result["error"] != "legacy project publish API is disabled; use the publication orchestrator transaction API" {
+		t.Fatalf("unexpected legacy publish error: %+v", result)
 	}
 	stored, ok := e.GetProject(project.ID)
-	if !ok || len(stored.Publications) != 2 {
-		t.Fatalf("publication history not persisted: ok=%t project=%+v", ok, stored)
+	if !ok || len(stored.Publications) != 0 {
+		t.Fatalf("legacy publish must not persist publication history: ok=%t project=%+v", ok, stored)
+	}
+}
+
+func TestRunEndpointsOfferingPost202ThenPackageReady(t *testing.T) {
+	ledger, err := runstore.Open(t.TempDir() + "/runs.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	runs := distribution.NewService(ledger, t.TempDir())
+	if err := runs.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runs.Stop(context.Background()) })
+	h := NewHandlerWithRuns(engine.NewEngineWithDataDir(store.NewMemoryStore(), t.TempDir()), runs).Routes()
+	payload := domain.DistributionRequest{
+		IdempotencyKey: "api-e2e-1",
+		Platform:       domain.PlatformXiaohongshu,
+		Offering: &domain.OfferingInput{
+			Kind:        domain.OfferingKindProduct,
+			Title:       "API 测试商品",
+			Name:        "API 测试商品",
+			ValuePoints: []string{"轻便", "耐用"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	post := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	post.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, post)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("POST status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var created domain.Run
+	if err := json.Unmarshal(resp.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.Status != domain.RunStatusQueued {
+		t.Fatalf("unexpected accepted run: %+v", created)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var ready domain.Run
+	for time.Now().Before(deadline) {
+		get := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+created.ID, nil)
+		getResp := httptest.NewRecorder()
+		h.ServeHTTP(getResp, get)
+		if getResp.Code != http.StatusOK {
+			t.Fatalf("GET status=%d body=%s", getResp.Code, getResp.Body.String())
+		}
+		if err := json.Unmarshal(getResp.Body.Bytes(), &ready); err != nil {
+			t.Fatal(err)
+		}
+		if ready.Status == domain.RunStatusPackageReady {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ready.Status != domain.RunStatusPackageReady || len(ready.Artifacts) != 1 || ready.Artifacts[0].Kind != "package" {
+		t.Fatalf("run did not produce package artifact: %+v", ready)
+	}
+
+	// Same normalized payload reuses the durable run and is not accepted as a new run.
+	replay := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	replay.Header.Set("Content-Type", "application/json")
+	replayResp := httptest.NewRecorder()
+	h.ServeHTTP(replayResp, replay)
+	if replayResp.Code != http.StatusOK {
+		t.Fatalf("idempotent replay status=%d body=%s", replayResp.Code, replayResp.Body.String())
+	}
+	var reused domain.Run
+	if err := json.Unmarshal(replayResp.Body.Bytes(), &reused); err != nil || reused.ID != created.ID {
+		t.Fatalf("idempotent replay returned %+v err=%v", reused, err)
+	}
+
+	conflictPayload := payload
+	conflictPayload.Offering = &domain.OfferingInput{Title: "different payload"}
+	conflictBody, _ := json.Marshal(conflictPayload)
+	conflict := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(conflictBody))
+	conflict.Header.Set("Content-Type", "application/json")
+	conflictResp := httptest.NewRecorder()
+	h.ServeHTTP(conflictResp, conflict)
+	if conflictResp.Code != http.StatusConflict {
+		t.Fatalf("idempotency conflict status=%d body=%s", conflictResp.Code, conflictResp.Body.String())
 	}
 }

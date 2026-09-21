@@ -40,7 +40,107 @@ http://127.0.0.1:8088
 - `douyin_product_hook`：抖音强钩子商品短视频。
 - `wechat_channels_product_trust`：视频号生活化推荐，当前是后续模板占位。
 
-## 3. 单项目 API
+## 3. 异步 Distribution Run API
+
+这组接口使用 `internal/domain/distribution.go` 中的
+`ContentAtom`、`DistributionRequest` 和 `DistributionRun` 契约，运行记录、事件和 artifact manifest 持久化到配置数据目录下的 SQLite。它与旧的 project / batch API 并存。
+
+### POST /api/v1/runs
+
+创建并持久化一个异步 Run。请求必须且只能提供 `offering` 或 `atom` 之一；当前只接受一个 `platform` 或一个 `targets` 项，平台为 `douyin`、`xiaohongshu` 或 `bilibili`。视频号不接受新的异步 Run。
+
+```json
+{
+  "idempotency_key": "creator-2026-09-20-001",
+  "offering": {
+    "kind": "capability",
+    "name": "自动剪辑能力",
+    "value_points": ["自动切片", "自动字幕"],
+    "target_audience": "内容团队"
+  },
+  "platform": "xiaohongshu",
+  "variant_count": 10
+}
+```
+
+`202 Accepted` 表示 Run 已进入 durable ledger，不表示媒体或平台投稿已完成。重复的幂等键和相同请求返回已有 Run；相同幂等键但请求不同返回 `409`。
+
+### GET /api/v1/runs
+
+按更新时间倒序列出 durable Runs。可用 `limit` 查询参数限制返回数量。
+
+### GET /api/v1/runs/{id}
+
+返回单个 `DistributionRun`，包括 `status`、`checkpoint`、`capability_block`、`error`、`artifacts` 和请求原文。
+
+### GET /api/v1/runs/{id}/events
+
+默认返回 append-only `RunEvent` JSON 列表，支持 `after_id`；请求头带 `Accept: text/event-stream` 时切换为 SSE 流。
+
+### POST /api/v1/runs/{id}/cancel|resume|retry
+
+对 Run 执行状态操作。恢复和重试仍受能力边界、租约和幂等规则约束，不会绕过平台发布或人工审核。
+
+Offering Run 当前复用既有确定性 workflow 并生成本地 `package.json` artifact；配置 Media Worker 后可继续到 `media_ready`。Research atom 需要已配置的模型执行器；Bilibili 已有内容模板和平台约束；publication API 只从 `media_ready` artifact 进入授权和发布事务；Analytics 仍未接入。
+
+## 4. 异步 Pipeline Run API
+
+这组接口暴露 `internal/pipeline.Service` 的 durable parent run。它负责
+`ResearchTopic -> Judgment -> ContentAtom[] -> DistributionRun[]` 的编排；
+`ResearchTopic` 只出现在 pipeline 请求中，不会进入任何
+`DistributionRequest`，这些接口也不会产生平台投稿副作用。
+
+### POST /api/v1/pipeline-runs
+
+创建并排队一个 pipeline run。请求使用严格 JSON 解码：未知字段会返回
+`400`，请求体上限为 2 MiB，且请求体必须只包含一个 JSON 值。
+
+```json
+{
+  "idempotency_key": "research-2026-09-21-001",
+  "topic": {
+    "topic": "租房用户的桌面收纳需求",
+    "source_urls": ["https://example.com/source"],
+    "desired_action": "形成可核验的内容判断"
+  },
+  "targets": [
+    {"platform": "xiaohongshu", "account_id": "brand-account"}
+  ],
+  "template": "xiaohongshu_product_seed",
+  "variant_count": 3,
+  "media": {"enabled": false}
+}
+```
+
+首次创建返回 `202 Accepted`，表示已持久化并排队；不表示判断、媒体生成或
+发布已完成。相同幂等键和相同请求返回 `200` 与已有 run；相同幂等键但请求
+不同返回 `409`。pipeline service 未注入或未运行时返回 `503`。
+
+### GET /api/v1/pipeline-runs
+
+按创建时间倒序列出 pipeline runs。可用 `limit` 查询参数限制返回数量。
+
+### GET /api/v1/pipeline-runs/{id}
+
+返回单个 `PipelineRun`，包括请求中的 `topic`、当前 checkpoint、判断产物、
+生成的 ContentAtom、子 Distribution Run、能力阻塞和错误信息。
+
+### GET /api/v1/pipeline-runs/{id}/events
+
+默认返回 append-only `RunEvent` JSON 数组，支持 `after_id` 和
+`Last-Event-ID`。请求头带 `Accept: text/event-stream` 时返回 SSE；流在
+pipeline 进入 `blocked`、`failed`、`distribution_ready` 或 `cancelled` 时结束。
+
+### POST /api/v1/pipeline-runs/{id}/cancel
+
+取消尚未结束的 pipeline run。成功返回 `200`；重复取消是幂等的。
+
+### POST /api/v1/pipeline-runs/{id}/retry
+
+重试 `blocked`、`failed` 或 `cancelled` 的 pipeline run，并增加 attempt。
+成功重新排队时返回 `202`；`202` 只表示重新排队，不表示任何发布动作。
+
+## 5. 单项目 API
 
 ### POST /api/v1/projects
 
@@ -151,7 +251,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/v1/projects \
 }
 ```
 
-## 4. OpenMontage 渲染 API
+## 6. OpenMontage 渲染 API
 
 ### POST /api/v1/projects/{id}/render/openmontage
 
@@ -163,15 +263,15 @@ curl -sS -X POST http://127.0.0.1:8088/api/v1/projects \
 - 渲染失败不应破坏已有 brief、variants、export。
 - 本地 OpenMontage 默认路径见 `docs/OPENMONTAGE_MAPPING.md` 和 `docs/modules/OPENMONTAGE_RENDER.md`。
 
-## 5. 多平台发布 API
+## 7. 多平台发布 API
 
-### GET /api/v1/publishing/platforms
+### GET /api/v1/publishing/platforms（legacy compatibility）
 
-返回抖音、小红书、视频号的发布模式、配置状态和是否需要用户确认。
+返回旧 publisher registry 的抖音、小红书、视频号能力。该接口只用于兼容旧 project API；新的异步 Run 发布必须使用下面的 Publication Orchestrator API，视频号不在其 allowlist 中。
 
-### POST /api/v1/projects/{id}/publish
+### POST /api/v1/projects/{id}/publish（legacy compatibility, being disabled）
 
-一次请求一个或多个平台。`confirm=true` 必填；不传标题、正文和标签时使用项目 brief。
+一次请求一个或多个旧平台。`confirm=true` 必填；不传标题、正文和标签时使用项目 brief。此路径正在禁用，不应被用于真实线上发布。
 
 ```json
 {
@@ -182,9 +282,9 @@ curl -sS -X POST http://127.0.0.1:8088/api/v1/projects \
 }
 ```
 
-平台结果状态：`submitted`、`action_required`、`failed`。抖音可经官方 API 直接提交；小红书需官方分享 SDK 唤起客户端；视频号需在官方助手完成确认。详见 `docs/modules/PUBLISHING.md`。
+平台结果状态：`submitted`、`action_required`、`failed`。此旧接口没有新的精确 fingerprint、reservation、unknown/reconcile 和双确认保证。详见 `docs/modules/PUBLISHING.md`；正式入口见第 11 节。
 
-## 6. 批量视频工厂 API
+## 8. 批量视频工厂 API
 
 ### POST /api/v1/batches/run
 
@@ -240,7 +340,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/v1/batches/run \
 
 用途：查看 batch 详情。
 
-## 7. 输出文件约定
+## 9. 输出文件约定
 
 批量主路径会写出：
 
@@ -259,11 +359,72 @@ data/batches/<batch_id>/projects/<project_id>/publish_package.json
 4. 如果失败，失败原因是什么。
 5. 下一步应该审核什么、补什么素材、如何回填数据。
 
-## 8. 当前限制
+## 10. 当前限制
 
 - Batch 当前是同步执行，不是异步队列。
-- Store 当前是内存存储；输出文件会落盘，但服务重启后内存里的项目列表会清空。
+- 新的 Distribution Run 使用 SQLite 持久化 runs、events 和 artifacts；旧 project / batch store 仍是内存实现，服务重启后旧项目列表和 batch 列表会清空，但已导出的文件保留。
 - OpenMontage 是可选增强，失败不影响 render=false 主路径。
 - 抖音 OAuth/token 生命周期和审核状态查询尚未实现。
-- 小红书和视频号受官方开放能力约束，需要客户端或创作者后台最终确认。
+- 新异步 Run 已接入 publication coordinator；抖音提交需要官方凭据或 Ego bridge，小红书和 Bilibili 的一次性授权提交需要 Ego bridge，测试不会执行真实投稿。
+- 小红书 `XHS_SHARE_APP_KEY` 仅支持旧 publisher contract 的 SDK 客户端交接，不能完成一键发布，也不会被选为一次性授权 commit 的 adapter；Ego 未配置时小红书能力被阻塞。视频号仍需在创作者后台完成最终确认。
+- Research gateway、Media Worker 和 Publication Orchestrator 已有 Go 服务接线；Analytics 尚未实现指标采集和平台数据回流，因此仍不是完整自动闭环。
 - 自动抓指标和完整可视化剪辑器尚未实现。
+
+## 11. Publication Orchestrator API
+
+Publication APIs coordinate only durable `media_ready` distribution runs. They
+do not accept client media paths or client-provided digests.
+
+### GET /api/v1/publications/capabilities
+
+Returns truthful capability entries for Douyin, Xiaohongshu, and Bilibili.
+Unconfigured official/browser adapters are reported as blockers and are not
+treated as successful publication.
+
+### POST /api/v1/publications/candidate
+
+Builds a read-only candidate from durable run artifacts. Example body:
+
+```json
+{"run_id":"run_123","creator":"creator_1","account":"account_1","platform":"xiaohongshu","variant_id":"variant-1"}
+```
+
+The run must be `media_ready`, target the requested platform/account, contain a
+bounded `publish_package.json`, a rendered video and a cover. The response
+contains the reconstructed `package` and its `fingerprint`. No adapter is
+called.
+
+### POST /api/v1/publications/authorize
+
+Authorizes an exact candidate only when `confirm` is true. The request contains
+`candidate`, `policy` (`version` and `selected`), and an RFC3339 `expires_at`.
+Expiry is bounded by the service's short maximum lifetime. The response is a
+one-use authorization record and contains no reservation token.
+
+### POST /api/v1/publications/prepare
+
+The request contains the same `candidate`, `authorization_id`, candidate
+`fingerprint`, and `policy`. The candidate is rebuilt from durable artifacts;
+changes to media or complete copy fail before preparation. Preparation does not
+invoke a platform adapter.
+
+### GET /api/v1/publications and GET /api/v1/publications/{id}
+
+List or inspect durable publication snapshots. Reservation tokens are omitted
+from all JSON responses.
+
+### POST /api/v1/publications/{id}/commit
+
+Consumes the one-use authorization and invokes the configured adapter once.
+Submit `fingerprint`; a lost or uncertain outcome becomes `unknown` and must be
+handled by reconcile.
+
+### POST /api/v1/publications/{id}/reconcile
+
+Queries the adapter through its official reconciliation capability. It never
+retries commit and never converts a browser draft or `READY` signal into
+`submitted`.
+
+Errors use `400` for malformed requests, `404` for missing durable runs or
+publications, `409` for binding/state conflicts, `412` for an expired or
+not-ready precondition, and `503` for unavailable publication capability.

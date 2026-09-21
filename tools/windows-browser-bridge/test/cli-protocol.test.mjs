@@ -33,5 +33,25 @@ test("compiled launcher forwards ESM stdin when available", async t => {
   assert.equal(code, 0); assert.match(Buffer.concat(stdout).toString(), /launcher-esm-ok:true/); assert.equal(Buffer.concat(stderr).toString(), "");
 });
 
+test("nodejs runner reports session-close persistence failures", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-cli-close-failure-"));
+  const errors = [];
+  const code = await runNodeJS({
+    stdin: readable('process.exitCode = 0;'),
+    stdout: writable([]),
+    stderr: writable(errors),
+    config: { runsDir: path.join(root, "runs") },
+    token: "unused",
+    ensureDaemonFn: async () => {},
+    bootstrapPath: path.resolve("fixtures", "runner-bootstrap.mjs"),
+    openSessionFn: async () => ({ sessionId: "close-failure-session" }),
+    closeSessionFn: async () => ({ ok: false, persisted: false, persistenceError: "state write failed" }),
+  });
+  await fs.rm(root, { recursive: true, force: true });
+
+  assert.equal(code, 1);
+  assert.match(Buffer.concat(errors).toString(), /session close failed: state write failed/);
+});
+
 function readable(value) { return { setEncoding() {}, on(event, cb) { if (event === "data") cb(value); if (event === "end") cb(); return this; } }; }
 function writable(chunks) { return new Writable({ write(value, encoding, callback) { chunks.push(Buffer.from(value)); callback(); } }); }

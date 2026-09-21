@@ -41,6 +41,12 @@ func CheckPlatformStyle(platform domain.Platform, kind domain.OfferingKind, titl
 			issues = append(issues, "抖音 caption 缺少明确 CTA")
 		}
 		advice = append(advice, "前 3 秒用强对比或反常识开场，镜头节奏保持更短。")
+	case domain.PlatformBilibili:
+		if !containsAny(caption, []string{"证据", "观点", "边界", "讨论"}) {
+			score -= 6
+			issues = append(issues, "Bilibili caption 缺少观点、证据或讨论提示")
+		}
+		advice = append(advice, "标题控制在平台可读长度，保留证据引用、反方边界和章节化叙述。")
 	default:
 		if !containsAny(caption, []string{"真实", "避坑", "收藏", "小红书"}) {
 			score -= 6

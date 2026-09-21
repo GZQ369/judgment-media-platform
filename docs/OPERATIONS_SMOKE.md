@@ -150,7 +150,7 @@ D:/agent/video-workers/OpenMontage/video_factory_pipeline_runner.py
 
 ### 7.5 服务重启后查不到 batch
 
-当前 store 是内存实现；重启后 API 中的 batch 列表会清空。但已导出的文件仍在 `data/batches/`。后续需要 SQLite 持久化。
+旧 project / batch store 是内存实现；重启后旧 API 中的 batch 列表会清空，但已导出的文件仍在 `data/batches/`。新的 `/api/v1/runs` 使用 `data/runs/runs.sqlite` 持久化 runs、events 和 artifacts。两套存储并存，不能把 Run 的持久化能力推广成旧 batch API 已持久化。
 
 ## 8. 验收记录模板
 
