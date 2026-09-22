@@ -298,8 +298,14 @@ func (s *Service) Reconcile(ctx context.Context, req ReconcileRequest) (Publicat
 func (s *Service) Get(ctx context.Context, id string) (Publication, error) {
 	return s.orchestrator.Get(ctx, id)
 }
+func (s *Service) GetForAnalytics(ctx context.Context, id string) (Publication, error) {
+	return s.orchestrator.GetForAnalytics(ctx, id)
+}
 func (s *Service) List(ctx context.Context, limit int) ([]Publication, error) {
 	return s.orchestrator.List(ctx, limit)
+}
+func (s *Service) ListForAnalytics(ctx context.Context, afterID string, limit int) ([]Publication, error) {
+	return s.orchestrator.ListForAnalytics(ctx, afterID, limit)
 }
 func (s *Service) Capabilities(ctx context.Context) []Capability {
 	return s.orchestrator.Capabilities(ctx)

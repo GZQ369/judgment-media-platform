@@ -81,13 +81,21 @@ type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+type publicationScanner interface {
+	Scan(...any) error
+}
+
 const publicationSelect = `SELECT id,package_json,fingerprint,policy_version,business_day,authorization_id,status,
  reservation_token,operation_token,lease_until,external_id,external_url,evidence,last_error,reserved_at,created_at,updated_at FROM pub_publications`
 
 func loadPublication(ctx context.Context, q queryer, id string) (Publication, error) {
+	return scanPublication(q.QueryRowContext(ctx, publicationSelect+` WHERE id=?`, id))
+}
+
+func scanPublication(scanner publicationScanner) (Publication, error) {
 	var p Publication
 	var raw, reserved, created, updated string
-	err := q.QueryRowContext(ctx, publicationSelect+` WHERE id=?`, id).Scan(&p.ID, &raw, &p.Fingerprint, &p.PolicyVersion, &p.BusinessDay, &p.AuthorizationID, &p.Status, &p.ReservationToken, &p.operationToken, &p.leaseUntil, &p.ExternalID, &p.ExternalURL, &p.Evidence, &p.LastError, &reserved, &created, &updated)
+	err := scanner.Scan(&p.ID, &raw, &p.Fingerprint, &p.PolicyVersion, &p.BusinessDay, &p.AuthorizationID, &p.Status, &p.ReservationToken, &p.operationToken, &p.leaseUntil, &p.ExternalID, &p.ExternalURL, &p.Evidence, &p.LastError, &reserved, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}

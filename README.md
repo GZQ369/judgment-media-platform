@@ -203,7 +203,7 @@ curl http://127.0.0.1:8088/health
 - OpenMontage 可选渲染路径；Docker 仅支持 API 和无渲染 workflow，不含完整渲染依赖
 - `internal/publication` 已接入异步 Run 的受控发布事务；Ego adapter 是小红书和 Bilibili 当前的提交路径，也是抖音未配置官方 adapter 时的 fallback。小红书 `XHS_SHARE_APP_KEY` 只支持旧 publisher contract 的客户端交接，不能完成一键发布，也不会被选为一次性授权 commit 的 adapter。真实线上投稿尚未核验。旧项目直发接口保留兼容代码但正在禁用，不能绕过 Publication Orchestrator
 
-后续重点是配置并验证真实 Research/Judgment 模型、tRPC-Agent-Go 隔离适配器、平台 OAuth 与审核回查、Analytics 回流和调度器。Media Worker、Publication Orchestrator、Legacy Offering Adapter、Ego 与 Bilibili 适配代码已经存在，但不等于真实平台投稿已验证。
+后续重点是配置并验证真实 Research/Judgment 模型、tRPC-Agent-Go 隔离适配器、平台 OAuth 与审核回查，以及跨平台真实投稿闭环。Analytics 已有默认关闭的 opt-in follow-up worker：`ANALYTICS_POLL_ENABLED=false`；启用后只从本地 publication ledger durable discovery reserved publication，并按 `15s` tick 做只读 `GetForAnalytics`（默认 review `10m`、metrics `1h`、metrics window `168h`）。它不自动查询外部平台审核、不发布；metrics 仅在本地已验证 `published`、ID 匹配且配置了 Douyin provider 时轮询。被能力阻塞的 metrics 会按 capped schedule 重新检查，配置完成后可以恢复；XHS/Bili unavailable，live metrics 仍未验证。手动 sync 不变。Media Worker、Publication Orchestrator、Legacy Offering Adapter、Ego 与 Bilibili 适配代码已经存在，但不等于真实平台投稿已验证。
 
 ## Windows Browser Draft Runtime
 

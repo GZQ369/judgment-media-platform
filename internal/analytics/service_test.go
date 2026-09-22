@@ -26,6 +26,24 @@ func (g *sequenceGateway) Reconcile(context.Context, string) (platforminsights.P
 	return publication, nil
 }
 
+type lateResultGateway struct {
+	publication platforminsights.Publication
+	started     chan struct{}
+	release     chan struct{}
+	returned    chan struct{}
+}
+
+func (g *lateResultGateway) Get(context.Context, string) (platforminsights.Publication, error) {
+	return g.publication, nil
+}
+
+func (g *lateResultGateway) Reconcile(context.Context, string) (platforminsights.Publication, error) {
+	close(g.started)
+	<-g.release
+	close(g.returned)
+	return g.publication, errors.New("reconcile returned partial publication")
+}
+
 type fakeMetricsProvider struct {
 	calls int
 }
@@ -113,6 +131,39 @@ func TestServiceNeverPersistsUnverifiedPublished(t *testing.T) {
 	}
 }
 
+func TestServicePersistsCompletedPartialReconcileBeforeRetry(t *testing.T) {
+	store := testStore(t)
+	publication := testPublication(platforminsights.StatusReviewing)
+	reconcileErr := errors.New("provider returned partial publication")
+	gateway := platforminsights.PublicationGatewayFunc{
+		GetFunc: func(context.Context, string) (platforminsights.Publication, error) {
+			return publication, nil
+		},
+		ReconcileFunc: func(context.Context, string) (platforminsights.Publication, error) {
+			return publication, reconcileErr
+		},
+	}
+	service := NewServiceWithOptions(store, gateway, nil, Options{Owner: "worker-a", RetryDelay: time.Millisecond})
+
+	if err := service.Sync(context.Background(), "pub-1"); !errors.Is(err, reconcileErr) {
+		t.Fatalf("partial reconcile error = %v", err)
+	}
+	reviews, err := store.ListReviewSnapshots(context.Background(), "pub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviews) != 1 || reviews[0].Status != platforminsights.StatusReviewing {
+		t.Fatalf("completed partial reconcile was not snapshotted: %+v", reviews)
+	}
+	job, err := store.GetJob(context.Background(), "pub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobRetry || job.LastError != reconcileErr.Error() {
+		t.Fatalf("partial reconcile job state = %+v", job)
+	}
+}
+
 func TestLeaseExpiryFencesStaleWorker(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
@@ -159,5 +210,65 @@ func TestSyncClaimsOnlyRequestedPublication(t *testing.T) {
 	}
 	if job.Status != JobQueued {
 		t.Fatalf("unrelated job status=%q, want queued", job.Status)
+	}
+}
+
+func TestSyncCancellationDoesNotReadLateReconcileResult(t *testing.T) {
+	store := testStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := store.Enqueue(context.Background(), "pub-1"); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &lateResultGateway{
+		publication: testPublication(platforminsights.StatusReviewing),
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+		returned:    make(chan struct{}),
+	}
+	service := NewServiceWithOptions(store, gateway, nil, Options{Owner: "worker-a", LeaseTTL: time.Second})
+
+	done := make(chan error, 1)
+	go func() { done <- service.RunOnce(ctx) }()
+	<-gateway.started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled sync error = %v", err)
+	}
+
+	close(gateway.release)
+	select {
+	case <-gateway.returned:
+	case <-time.After(time.Second):
+		t.Fatal("late reconcile did not return")
+	}
+	reviews, err := store.ListReviewSnapshots(context.Background(), "pub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviews) != 0 {
+		t.Fatalf("late reconcile persisted review snapshot: %+v", reviews)
+	}
+	job, err := store.GetJob(context.Background(), "pub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobRunning || job.LeaseOwner != "worker-a" {
+		t.Fatalf("canceled worker unexpectedly finished job: %+v", job)
+	}
+
+	_, staleLease, err := store.ClaimDue(context.Background(), "worker-b", time.Second, job.LeaseUntil.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SaveReviewSnapshotFenced(context.Background(), ReviewSnapshot{
+		PublicationID: "pub-1", Provider: publicationProvider, Platform: "douyin", Status: platforminsights.StatusReviewing,
+	}, Lease{Owner: "worker-a", Token: job.LeaseToken, Until: job.LeaseUntil}); !errors.Is(err, platforminsights.ErrLeaseLost) {
+		t.Fatalf("stale canceled worker write error = %v", err)
+	}
+	if _, _, err := store.SaveReviewSnapshotFenced(context.Background(), ReviewSnapshot{
+		PublicationID: "pub-1", Provider: publicationProvider, Platform: "douyin", Status: platforminsights.StatusReviewing,
+	}, staleLease); err != nil {
+		t.Fatalf("current worker fenced write: %v", err)
 	}
 }

@@ -21,6 +21,11 @@ func TestLoadFromDefaults(t *testing.T) {
 		cfg.ShutdownTimeout != 30*time.Second {
 		t.Fatalf("unexpected timeout defaults: %#v", cfg)
 	}
+	if cfg.AnalyticsPollEnabled || cfg.AnalyticsReviewInterval != 10*time.Minute ||
+		cfg.AnalyticsMetricsInterval != time.Hour || cfg.AnalyticsMetricsWindow != 168*time.Hour ||
+		cfg.AnalyticsPollTick != 15*time.Second {
+		t.Fatalf("unexpected analytics defaults: %#v", cfg)
+	}
 	if cfg.MediaWorkerPython != "" || cfg.MediaWorkerScript != "" || cfg.MediaWorkerTimeout != 20*time.Minute {
 		t.Fatalf("unexpected media worker defaults: %#v", cfg)
 	}
@@ -46,6 +51,11 @@ func TestLoadFromOverrides(t *testing.T) {
 		"HTTP_IDLE_TIMEOUT":                 "5s",
 		"SHUTDOWN_TIMEOUT":                  "6s",
 		"ANALYTICS_DB_PATH":                 "var/analytics.sqlite",
+		"ANALYTICS_POLL_ENABLED":            "true",
+		"ANALYTICS_REVIEW_INTERVAL":         "5m",
+		"ANALYTICS_METRICS_INTERVAL":        "2h",
+		"ANALYTICS_METRICS_WINDOW":          "336h",
+		"ANALYTICS_POLL_TICK":               "30s",
 		"MEDIA_WORKER_PYTHON":               "python3",
 		"MEDIA_WORKER_SCRIPT":               "tools/media-worker/media_worker.py",
 		"MEDIA_WORKER_TIMEOUT":              "7m",
@@ -84,6 +94,11 @@ func TestLoadFromOverrides(t *testing.T) {
 		cfg.ShutdownTimeout != 6*time.Second {
 		t.Fatalf("unexpected timeout overrides: %#v", cfg)
 	}
+	if !cfg.AnalyticsPollEnabled || cfg.AnalyticsReviewInterval != 5*time.Minute ||
+		cfg.AnalyticsMetricsInterval != 2*time.Hour || cfg.AnalyticsMetricsWindow != 336*time.Hour ||
+		cfg.AnalyticsPollTick != 30*time.Second {
+		t.Fatalf("unexpected analytics overrides: %#v", cfg)
+	}
 	if cfg.MediaWorkerPython != "python3" || cfg.MediaWorkerScript == "" || cfg.MediaWorkerTimeout != 7*time.Minute || cfg.MediaWorkerFFmpeg != "ffmpeg" || cfg.MediaWorkerRemotion != "node.exe" || cfg.MediaWorkerRemotionCLI != "C:/project/node_modules/@remotion/cli/remotion-cli.js" || cfg.MediaWorkerRemotionCWD != "web/remotion" || cfg.MediaWorkerRemotionEntry != "custom/index.tsx" || cfg.MediaWorkerRemotionComposition != "CustomExplainer" {
 		t.Fatalf("unexpected media worker overrides: %#v", cfg)
 	}
@@ -110,6 +125,14 @@ func TestLoadFromRejectsInvalidValues(t *testing.T) {
 		{name: "gateway pair model only", env: map[string]string{"AI_GATEWAY_MODEL": "test-model"}, want: "AI_GATEWAY_BASE_URL and AI_GATEWAY_MODEL"},
 		{name: "gateway timeout", env: map[string]string{"AI_GATEWAY_TIMEOUT": "0s"}, want: "AI_GATEWAY_TIMEOUT"},
 		{name: "gateway local flag", env: map[string]string{"AI_GATEWAY_ALLOW_LOCAL": "sometimes"}, want: "AI_GATEWAY_ALLOW_LOCAL"},
+		{name: "analytics enabled flag", env: map[string]string{"ANALYTICS_POLL_ENABLED": "sometimes"}, want: "ANALYTICS_POLL_ENABLED"},
+		{name: "analytics review too short", env: map[string]string{"ANALYTICS_REVIEW_INTERVAL": "30s"}, want: "ANALYTICS_REVIEW_INTERVAL"},
+		{name: "analytics review too long", env: map[string]string{"ANALYTICS_REVIEW_INTERVAL": "25h"}, want: "ANALYTICS_REVIEW_INTERVAL"},
+		{name: "analytics metrics interval too short", env: map[string]string{"ANALYTICS_METRICS_INTERVAL": "30s"}, want: "ANALYTICS_METRICS_INTERVAL"},
+		{name: "analytics metrics window too short", env: map[string]string{"ANALYTICS_METRICS_WINDOW": "30m"}, want: "ANALYTICS_METRICS_WINDOW"},
+		{name: "analytics metrics window too long", env: map[string]string{"ANALYTICS_METRICS_WINDOW": "721h"}, want: "ANALYTICS_METRICS_WINDOW"},
+		{name: "analytics poll tick too short", env: map[string]string{"ANALYTICS_POLL_TICK": "500ms"}, want: "ANALYTICS_POLL_TICK"},
+		{name: "analytics poll tick too long", env: map[string]string{"ANALYTICS_POLL_TICK": "2h"}, want: "ANALYTICS_POLL_TICK"},
 	}
 
 	for _, tt := range tests {

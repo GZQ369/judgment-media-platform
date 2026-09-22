@@ -92,6 +92,7 @@ const (
 	JobQueued  = "queued"
 	JobRunning = "running"
 	JobRetry   = "retry"
+	JobWaiting = "waiting"
 	JobBlocked = "blocked"
 	JobDone    = "done"
 )
@@ -158,6 +159,9 @@ CREATE TABLE IF NOT EXISTS analytics_events (
  payload_json TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS analytics_events_publication ON analytics_events(publication_id, id);
+CREATE TABLE IF NOT EXISTS analytics_scheduler_state (
+ name TEXT PRIMARY KEY, cursor TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate analytics store: %w", err)
@@ -170,7 +174,59 @@ func (s *Store) Enqueue(ctx context.Context, publicationID string) error {
 		return errors.New("publication id is required")
 	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO analytics_sync_jobs(publication_id,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(publication_id) DO UPDATE SET status=CASE WHEN analytics_sync_jobs.status IN (?,?,?) THEN ? ELSE analytics_sync_jobs.status END, next_attempt_at=CASE WHEN analytics_sync_jobs.status IN (?,?,?) THEN excluded.next_attempt_at ELSE analytics_sync_jobs.next_attempt_at END, updated_at=excluded.updated_at`, publicationID, JobQueued, stamp(now), stamp(now), stamp(now), JobDone, JobBlocked, JobRetry, JobQueued, JobDone, JobBlocked, JobRetry)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO analytics_sync_jobs(publication_id,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(publication_id) DO UPDATE SET status=CASE WHEN analytics_sync_jobs.status IN (?,?,?,?) THEN ? ELSE analytics_sync_jobs.status END, next_attempt_at=CASE WHEN analytics_sync_jobs.status IN (?,?,?,?) THEN excluded.next_attempt_at ELSE analytics_sync_jobs.next_attempt_at END, updated_at=excluded.updated_at`, publicationID, JobQueued, stamp(now), stamp(now), stamp(now), JobDone, JobBlocked, JobRetry, JobWaiting, JobQueued, JobDone, JobBlocked, JobRetry, JobWaiting)
+	return err
+}
+
+// EnsureScheduled makes a discovered publication schedulable without
+// disturbing an existing job. In particular, a poll pass must not reset a
+// running, waiting, done, or blocked job back to queued.
+func (s *Store) EnsureScheduled(ctx context.Context, publicationID string) error {
+	if strings.TrimSpace(publicationID) == "" {
+		return errors.New("publication id is required")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO analytics_sync_jobs(publication_id,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(publication_id) DO NOTHING`, publicationID, JobQueued, stamp(now), stamp(now), stamp(now))
+	return err
+}
+
+// ReactivateDone moves one completed job back to the durable queue. The
+// status and expired-lease predicates make repeated discovery idempotent and
+// keep a live worker lease fenced from discovery.
+func (s *Store) ReactivateDone(ctx context.Context, publicationID string, next time.Time) (bool, error) {
+	if strings.TrimSpace(publicationID) == "" {
+		return false, errors.New("publication id is required")
+	}
+	if next.IsZero() {
+		next = time.Now().UTC()
+	} else {
+		next = next.UTC()
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE analytics_sync_jobs SET status=?,next_attempt_at=?,last_error='',lease_owner='',lease_token='',lease_until='',updated_at=? WHERE publication_id=? AND status=? AND (lease_until='' OR lease_until<=?)`, JobQueued, stamp(next), stamp(now), publicationID, JobDone, stamp(now))
+	if err != nil {
+		return false, err
+	}
+	count, _ := result.RowsAffected()
+	return count == 1, nil
+}
+
+// DiscoveryCursor returns the last durable publication identity handed to the
+// optional discovery provider. An empty cursor means the first page.
+func (s *Store) DiscoveryCursor(ctx context.Context) (string, error) {
+	var cursor string
+	err := s.db.QueryRowContext(ctx, `SELECT cursor FROM analytics_scheduler_state WHERE name=?`, "publications").Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return cursor, err
+}
+
+// SaveDiscoveryCursor advances the cursor only after every publication in the
+// discovered page has been durably scheduled.
+func (s *Store) SaveDiscoveryCursor(ctx context.Context, cursor string) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO analytics_scheduler_state(name,cursor,updated_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at`, "publications", cursor, stamp(now))
 	return err
 }
 
@@ -207,8 +263,8 @@ func (s *Store) claimDue(ctx context.Context, publicationID, owner string, ttl t
 	}
 	defer tx.Rollback()
 	var job SyncJob
-	query := `SELECT publication_id,status,attempts,next_attempt_at,last_error,lease_owner,lease_token,lease_until,created_at,updated_at FROM analytics_sync_jobs WHERE status IN (?,?,?) AND next_attempt_at<=? AND (lease_until='' OR lease_until<=?)`
-	args := []any{JobQueued, JobRetry, JobRunning, stamp(now), stamp(now)}
+	query := `SELECT publication_id,status,attempts,next_attempt_at,last_error,lease_owner,lease_token,lease_until,created_at,updated_at FROM analytics_sync_jobs WHERE status IN (?,?,?,?,?) AND next_attempt_at<=? AND (lease_until='' OR lease_until<=?)`
+	args := []any{JobQueued, JobRetry, JobWaiting, JobBlocked, JobRunning, stamp(now), stamp(now)}
 	if publicationID != "" {
 		query += ` AND publication_id=?`
 		args = append(args, publicationID)
@@ -222,7 +278,7 @@ func (s *Store) claimDue(ctx context.Context, publicationID, owner string, ttl t
 		return SyncJob{}, Lease{}, err
 	}
 	lease := Lease{Owner: owner, Token: uuid.NewString(), Until: now.Add(ttl)}
-	result, err := tx.ExecContext(ctx, `UPDATE analytics_sync_jobs SET status=?,attempts=attempts+1,lease_owner=?,lease_token=?,lease_until=?,updated_at=? WHERE publication_id=? AND status IN (?,?,?) AND (lease_until='' OR lease_until<=?)`, JobRunning, owner, lease.Token, stamp(lease.Until), stamp(now), job.PublicationID, JobQueued, JobRetry, JobRunning, stamp(now))
+	result, err := tx.ExecContext(ctx, `UPDATE analytics_sync_jobs SET status=?,attempts=attempts+1,lease_owner=?,lease_token=?,lease_until=?,updated_at=? WHERE publication_id=? AND status IN (?,?,?,?,?) AND (lease_until='' OR lease_until<=?)`, JobRunning, owner, lease.Token, stamp(lease.Until), stamp(now), job.PublicationID, JobQueued, JobRetry, JobWaiting, JobBlocked, JobRunning, stamp(now))
 	if err != nil {
 		return SyncJob{}, Lease{}, err
 	}

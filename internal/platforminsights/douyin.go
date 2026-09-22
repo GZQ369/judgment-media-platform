@@ -1,6 +1,7 @@
 package platforminsights
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,10 +34,9 @@ func (p *DouyinMetricsProvider) Capability(context.Context) Capability {
 
 type douyinMetricsResponse struct {
 	Data struct {
-		ErrorCode   int                `json:"error_code"`
-		Description string             `json:"description"`
-		Item        map[string]any     `json:"item"`
-		Metrics     map[string]float64 `json:"metrics"`
+		ErrorCode   int               `json:"error_code"`
+		Description string            `json:"description"`
+		List        []douyinVideoData `json:"list"`
 	} `json:"data"`
 	Extra struct {
 		ErrorCode   int    `json:"error_code"`
@@ -44,9 +44,13 @@ type douyinMetricsResponse struct {
 	} `json:"extra"`
 }
 
-// Fetch uses only the documented, read-only insight seam. The response parser
-// accepts both a normalized metrics object and a flat item object so API
-// response evolution does not silently discard counters.
+type douyinVideoData struct {
+	ItemID     string             `json:"item_id"`
+	Statistics map[string]float64 `json:"statistics"`
+}
+
+// Fetch uses only the documented, read-only insight seam and accepts data only
+// when the response identifies exactly the requested video.
 func (p *DouyinMetricsProvider) Fetch(ctx context.Context, req MetricsRequest) (MetricsObservation, error) {
 	capability := p.Capability(ctx)
 	if capability.State != CapabilityReady {
@@ -61,12 +65,18 @@ func (p *DouyinMetricsProvider) Fetch(ctx context.Context, req MetricsRequest) (
 	}
 	query := endpoint.Query()
 	query.Set("open_id", p.config.OpenID)
-	query.Set("item_id", req.ExternalID)
 	endpoint.RawQuery = query.Encode()
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	body, err := json.Marshal(struct {
+		ItemIDs []string `json:"item_ids"`
+	}{ItemIDs: []string{req.ExternalID}})
+	if err != nil {
+		return MetricsObservation{}, fmt.Errorf("encode douyin metrics request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		return MetricsObservation{}, err
 	}
+	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("access-token", p.config.AccessToken)
 	httpReq.Header.Set("x-douyin-scope", p.config.Scope)
 	response, err := p.config.HTTPClient.Do(httpReq)
@@ -84,18 +94,22 @@ func (p *DouyinMetricsProvider) Fetch(ctx context.Context, req MetricsRequest) (
 	if decoded.Data.ErrorCode != 0 || decoded.Extra.ErrorCode != 0 {
 		return MetricsObservation{}, fmt.Errorf("douyin metrics error: %s", douyinDescription(decoded))
 	}
-	metrics := copyMetrics(decoded.Data.Metrics)
-	if len(metrics) == 0 {
-		metrics = numericFields(decoded.Data.Item)
+	if len(decoded.Data.List) != 1 {
+		return MetricsObservation{}, fmt.Errorf("douyin metrics response identity is missing or ambiguous")
 	}
+	item := decoded.Data.List[0]
+	if item.ItemID == "" || item.ItemID != req.ExternalID {
+		return MetricsObservation{}, fmt.Errorf("douyin metrics response identity mismatch")
+	}
+	metrics := copyMetrics(item.Statistics)
 	if len(metrics) == 0 {
 		return MetricsObservation{}, fmt.Errorf("douyin metrics response contained no counters")
 	}
-	raw := make(map[string]any, len(decoded.Data.Item))
-	for key, value := range decoded.Data.Item {
-		raw[key] = value
+	raw := map[string]any{
+		"item_id":    item.ItemID,
+		"statistics": metrics,
 	}
-	return MetricsObservation{Provider: p.Name(), Platform: p.Platform(), ExternalID: req.ExternalID, ObservedAt: time.Now().UTC(), Metrics: metrics, Raw: raw}, nil
+	return MetricsObservation{Provider: p.Name(), Platform: p.Platform(), ExternalID: item.ItemID, ObservedAt: time.Now().UTC(), Metrics: metrics, Raw: raw}, nil
 }
 
 func douyinDescription(response douyinMetricsResponse) string {
@@ -112,21 +126,6 @@ func copyMetrics(in map[string]float64) map[string]float64 {
 	out := make(map[string]float64, len(in))
 	for key, value := range in {
 		out[key] = value
-	}
-	return out
-}
-
-func numericFields(in map[string]any) map[string]float64 {
-	out := make(map[string]float64)
-	for key, value := range in {
-		switch number := value.(type) {
-		case float64:
-			out[key] = number
-		case json.Number:
-			if parsed, err := number.Float64(); err == nil {
-				out[key] = parsed
-			}
-		}
 	}
 	return out
 }

@@ -14,13 +14,24 @@ import (
 )
 
 const (
-	defaultSyncLeaseTTL = 30 * time.Second
-	defaultRetryDelay   = time.Minute
-	publicationProvider = "publication"
+	defaultSyncLeaseTTL      = 30 * time.Second
+	defaultRetryDelay        = time.Minute
+	defaultReviewInterval    = 15 * time.Minute
+	defaultMetricsInterval   = 6 * time.Hour
+	defaultMetricsWindow     = 7 * 24 * time.Hour
+	defaultDiscoveryPageSize = 100
+	defaultMaxJobs           = 25
+	maxDiscoveryPageSize     = 200
+	maxJobs                  = 200
+	maxRetryDelay            = 1 * time.Hour
+	publicationProvider      = "publication"
 )
 
 var (
 	ErrNoGateway          = errors.New("analytics publication gateway is not configured")
+	ErrNoDiscovery        = errors.New("analytics publication discovery is not configured")
+	ErrNoSnapshotReader   = errors.New("analytics publication snapshot reader is not configured")
+	ErrDiscoveryStalled   = errors.New("analytics publication discovery cursor did not advance")
 	ErrInvalidObservation = errors.New("analytics provider returned an invalid observation")
 	ErrSyncInProgress     = errors.New("analytics sync is already in progress")
 )
@@ -29,20 +40,34 @@ var (
 // start a background goroutine; callers can run one job at a time or attach
 // RunOnce to an existing scheduler.
 type Options struct {
-	Owner      string
-	LeaseTTL   time.Duration
-	RetryDelay time.Duration
+	Owner             string
+	LeaseTTL          time.Duration
+	RetryDelay        time.Duration
+	PollEnabled       bool
+	ReviewInterval    time.Duration
+	MetricsInterval   time.Duration
+	MetricsWindow     time.Duration
+	DiscoveryPageSize int
+	MaxJobs           int
+	Clock             func() time.Time
 }
 
 // Service reconciles a publication, stores its immutable review observations,
 // and fetches metrics only after verified published evidence is present.
 type Service struct {
-	store     *Store
-	gateway   platforminsights.PublicationGateway
-	providers map[string]platforminsights.MetricsProvider
-	owner     string
-	leaseTTL  time.Duration
-	retry     time.Duration
+	store             *Store
+	gateway           platforminsights.PublicationGateway
+	providers         map[string]platforminsights.MetricsProvider
+	owner             string
+	leaseTTL          time.Duration
+	retry             time.Duration
+	pollEnabled       bool
+	reviewInterval    time.Duration
+	metricsInterval   time.Duration
+	metricsWindow     time.Duration
+	discoveryPageSize int
+	maxJobs           int
+	now               func() time.Time
 }
 
 // Insights is the complete durable analytics view for one publication.
@@ -70,6 +95,30 @@ func NewServiceWithOptions(store *Store, gateway platforminsights.PublicationGat
 	if options.RetryDelay <= 0 {
 		options.RetryDelay = defaultRetryDelay
 	}
+	if options.ReviewInterval <= 0 {
+		options.ReviewInterval = defaultReviewInterval
+	}
+	if options.MetricsInterval <= 0 {
+		options.MetricsInterval = defaultMetricsInterval
+	}
+	if options.MetricsWindow <= 0 {
+		options.MetricsWindow = defaultMetricsWindow
+	}
+	if options.DiscoveryPageSize <= 0 {
+		options.DiscoveryPageSize = defaultDiscoveryPageSize
+	}
+	if options.DiscoveryPageSize > maxDiscoveryPageSize {
+		options.DiscoveryPageSize = maxDiscoveryPageSize
+	}
+	if options.MaxJobs <= 0 {
+		options.MaxJobs = defaultMaxJobs
+	}
+	if options.MaxJobs > maxJobs {
+		options.MaxJobs = maxJobs
+	}
+	if options.Clock == nil {
+		options.Clock = time.Now
+	}
 	providerMap := make(map[string]platforminsights.MetricsProvider, len(providers))
 	for _, provider := range providers {
 		if provider == nil || strings.TrimSpace(provider.Platform()) == "" {
@@ -77,7 +126,7 @@ func NewServiceWithOptions(store *Store, gateway platforminsights.PublicationGat
 		}
 		providerMap[provider.Platform()] = provider
 	}
-	return &Service{store: store, gateway: gateway, providers: providerMap, owner: options.Owner, leaseTTL: options.LeaseTTL, retry: options.RetryDelay}
+	return &Service{store: store, gateway: gateway, providers: providerMap, owner: options.Owner, leaseTTL: options.LeaseTTL, retry: options.RetryDelay, pollEnabled: options.PollEnabled, reviewInterval: options.ReviewInterval, metricsInterval: options.MetricsInterval, metricsWindow: options.MetricsWindow, discoveryPageSize: options.DiscoveryPageSize, maxJobs: options.MaxJobs, now: options.Clock}
 }
 
 // Enqueue makes a publication eligible for one reconciliation pass.
@@ -123,7 +172,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.process(ctx, job, lease)
+	return s.processManual(ctx, job, lease)
 }
 
 // RunOnceForPublication claims only the requested publication. It preserves
@@ -142,7 +191,7 @@ func (s *Service) RunOnceForPublication(ctx context.Context, publicationID strin
 		}
 		return err
 	}
-	return s.process(ctx, job, lease)
+	return s.processManual(ctx, job, lease)
 }
 
 // Insights returns only durable observations and job state. If a publication
@@ -211,12 +260,28 @@ func (s *Service) Capabilities(ctx context.Context) []platforminsights.Capabilit
 	return result
 }
 
-func (s *Service) process(ctx context.Context, job SyncJob, lease Lease) error {
+func (s *Service) processManual(ctx context.Context, job SyncJob, lease Lease) error {
 	if s.gateway == nil {
 		return s.finish(ctx, job, lease, JobBlocked, ErrNoGateway)
 	}
 
-	publication, reconcileErr := s.gateway.Reconcile(ctx, job.PublicationID)
+	type reconcileResult struct {
+		publication platforminsights.Publication
+	}
+	result := make(chan reconcileResult, 1)
+	reconcileErr := s.callWithLease(ctx, job, lease, func(callCtx context.Context) error {
+		publication, err := s.gateway.Reconcile(callCtx, job.PublicationID)
+		result <- reconcileResult{publication: publication}
+		return err
+	})
+	var publication platforminsights.Publication
+	select {
+	case completed := <-result:
+		publication = completed.publication
+	default:
+		// callWithLease may return after cancellation or lease loss while a
+		// non-cooperative gateway is still unwinding. Do not wait for it.
+	}
 	if publication.ID != "" {
 		review := reviewSnapshot(job.PublicationID, publication)
 		if _, _, err := s.store.SaveReviewSnapshotFenced(ctx, review, lease); err != nil {
@@ -240,17 +305,28 @@ func (s *Service) collectMetrics(ctx context.Context, publication platforminsigh
 	if provider == nil {
 		return nil
 	}
-	capability := provider.Capability(ctx)
+	var capability platforminsights.Capability
+	if err := s.callWithLease(ctx, job, lease, func(callCtx context.Context) error {
+		capability = provider.Capability(callCtx)
+		return nil
+	}); err != nil {
+		return s.finish(ctx, job, lease, JobRetry, err)
+	}
 	if capability.State != platforminsights.CapabilityReady {
 		err := fmt.Errorf("%w: %s", platforminsights.ErrCapabilityBlocked, capability.Reason)
 		return s.finish(ctx, job, lease, JobBlocked, err)
 	}
-	observation, err := provider.Fetch(ctx, platforminsights.MetricsRequest{
-		PublicationID: job.PublicationID,
-		Platform:      publication.Platform,
-		Account:       publication.Account,
-		ExternalID:    publication.ExternalID,
-		ExternalURL:   publication.ExternalURL,
+	var observation platforminsights.MetricsObservation
+	err := s.callWithLease(ctx, job, lease, func(callCtx context.Context) error {
+		var fetchErr error
+		observation, fetchErr = provider.Fetch(callCtx, platforminsights.MetricsRequest{
+			PublicationID: job.PublicationID,
+			Platform:      publication.Platform,
+			Account:       publication.Account,
+			ExternalID:    publication.ExternalID,
+			ExternalURL:   publication.ExternalURL,
+		})
+		return fetchErr
 	})
 	if err != nil {
 		return s.finish(ctx, job, lease, JobRetry, err)

@@ -435,6 +435,12 @@ func (o *Orchestrator) Get(ctx context.Context, id string) (Publication, error) 
 	return p, err
 }
 
+// GetForAnalytics reads the durable publication without lease recovery or any
+// other state transition. Scheduled analytics must use this read-only path.
+func (o *Orchestrator) GetForAnalytics(ctx context.Context, id string) (Publication, error) {
+	return loadPublication(ctx, o.db, id)
+}
+
 // List returns durable publication snapshots without exposing reservation
 // tokens through JSON (Publication deliberately tags that field as private).
 func (o *Orchestrator) List(ctx context.Context, limit int) ([]Publication, error) {
@@ -464,6 +470,32 @@ func (o *Orchestrator) List(ctx context.Context, limit int) ([]Publication, erro
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	return items, nil
+}
+
+// ListForAnalytics returns only reserved publication snapshots in stable ID
+// order. It is deliberately a direct read: unlike Get, it never recovers an
+// expired operation lease or otherwise mutates publication state.
+func (o *Orchestrator) ListForAnalytics(ctx context.Context, afterID string, limit int) ([]Publication, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := o.db.QueryContext(ctx, publicationSelect+` WHERE id > ? AND reserved_at <> '' AND status <> ? ORDER BY id ASC LIMIT ?`, afterID, StatusDraftReady, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Publication, 0, limit)
+	for rows.Next() {
+		item, err := scanPublication(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

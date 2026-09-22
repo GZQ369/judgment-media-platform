@@ -8,17 +8,29 @@ import (
 )
 
 const (
-	defaultAddr               = "127.0.0.1:8088"
-	defaultDataDir            = "data"
-	defaultLogLevel           = "info"
-	defaultReadHeaderTimeout  = 5 * time.Second
-	defaultReadTimeout        = 15 * time.Second
-	defaultWriteTimeout       = 20 * time.Minute
-	defaultIdleTimeout        = 60 * time.Second
-	defaultShutdownTimeout    = 30 * time.Second
-	defaultMediaWorkerTimeout = 20 * time.Minute
-	defaultAIGatewayTimeout   = 2 * time.Minute
-	defaultEgoTimeout         = 2 * time.Minute
+	defaultAddr                     = "127.0.0.1:8088"
+	defaultDataDir                  = "data"
+	defaultLogLevel                 = "info"
+	defaultReadHeaderTimeout        = 5 * time.Second
+	defaultReadTimeout              = 15 * time.Second
+	defaultWriteTimeout             = 20 * time.Minute
+	defaultIdleTimeout              = 60 * time.Second
+	defaultShutdownTimeout          = 30 * time.Second
+	defaultMediaWorkerTimeout       = 20 * time.Minute
+	defaultAIGatewayTimeout         = 2 * time.Minute
+	defaultEgoTimeout               = 2 * time.Minute
+	defaultAnalyticsReviewInterval  = 10 * time.Minute
+	defaultAnalyticsMetricsInterval = time.Hour
+	defaultAnalyticsMetricsWindow   = 168 * time.Hour
+	defaultAnalyticsPollTick        = 15 * time.Second
+	minAnalyticsReviewInterval      = time.Minute
+	maxAnalyticsReviewInterval      = 24 * time.Hour
+	minAnalyticsMetricsInterval     = time.Minute
+	maxAnalyticsMetricsInterval     = 168 * time.Hour
+	minAnalyticsMetricsWindow       = time.Hour
+	maxAnalyticsMetricsWindow       = 720 * time.Hour
+	minAnalyticsPollTick            = time.Second
+	maxAnalyticsPollTick            = time.Hour
 )
 
 // Config contains process-level settings for the HTTP service.
@@ -32,6 +44,11 @@ type Config struct {
 	IdleTimeout                    time.Duration
 	ShutdownTimeout                time.Duration
 	AnalyticsDBPath                string
+	AnalyticsPollEnabled           bool
+	AnalyticsReviewInterval        time.Duration
+	AnalyticsMetricsInterval       time.Duration
+	AnalyticsMetricsWindow         time.Duration
+	AnalyticsPollTick              time.Duration
 	MediaWorkerPython              string
 	MediaWorkerScript              string
 	MediaWorkerTimeout             time.Duration
@@ -111,6 +128,26 @@ func LoadFrom(values map[string]string) (Config, error) {
 		return Config{}, err
 	}
 	analyticsDBPath, err := optionalString(values, "ANALYTICS_DB_PATH")
+	if err != nil {
+		return Config{}, err
+	}
+	analyticsPollEnabled, err := optionalBool(values, "ANALYTICS_POLL_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	analyticsReviewInterval, err := boundedDuration(values, "ANALYTICS_REVIEW_INTERVAL", defaultAnalyticsReviewInterval, minAnalyticsReviewInterval, maxAnalyticsReviewInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	analyticsMetricsInterval, err := boundedDuration(values, "ANALYTICS_METRICS_INTERVAL", defaultAnalyticsMetricsInterval, minAnalyticsMetricsInterval, maxAnalyticsMetricsInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	analyticsMetricsWindow, err := boundedDuration(values, "ANALYTICS_METRICS_WINDOW", defaultAnalyticsMetricsWindow, minAnalyticsMetricsWindow, maxAnalyticsMetricsWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	analyticsPollTick, err := boundedDuration(values, "ANALYTICS_POLL_TICK", defaultAnalyticsPollTick, minAnalyticsPollTick, maxAnalyticsPollTick)
 	if err != nil {
 		return Config{}, err
 	}
@@ -250,6 +287,11 @@ func LoadFrom(values map[string]string) (Config, error) {
 		IdleTimeout:                    idleTimeout,
 		ShutdownTimeout:                shutdownTimeout,
 		AnalyticsDBPath:                analyticsDBPath,
+		AnalyticsPollEnabled:           analyticsPollEnabled,
+		AnalyticsReviewInterval:        analyticsReviewInterval,
+		AnalyticsMetricsInterval:       analyticsMetricsInterval,
+		AnalyticsMetricsWindow:         analyticsMetricsWindow,
+		AnalyticsPollTick:              analyticsPollTick,
 		MediaWorkerPython:              mediaWorkerPython,
 		MediaWorkerScript:              mediaWorkerScript,
 		MediaWorkerTimeout:             mediaWorkerTimeout,
@@ -355,6 +397,17 @@ func duration(values map[string]string, name string, fallback time.Duration) (ti
 	}
 	if parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive duration", name)
+	}
+	return parsed, nil
+}
+
+func boundedDuration(values map[string]string, name string, fallback, min, max time.Duration) (time.Duration, error) {
+	parsed, err := duration(values, name, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if parsed < min || parsed > max {
+		return 0, fmt.Errorf("%s must be between %s and %s", name, min, max)
 	}
 	return parsed, nil
 }

@@ -351,6 +351,131 @@ func TestRuntimePublicationCapabilitiesAreExplicitWithoutConfiguration(t *testin
 	}
 }
 
+func TestAnalyticsPollerIsDisabledByDefault(t *testing.T) {
+	runtime, err := openRuntime(config.Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("openRuntime returned error: %v", err)
+	}
+	if runtime.analyticsPollCancel != nil || runtime.analyticsPollDone != nil {
+		t.Fatal("analytics poller started with default-disabled configuration")
+	}
+	if err := runtime.close(context.Background()); err != nil {
+		t.Fatalf("runtime.close returned error: %v", err)
+	}
+}
+
+func TestAnalyticsPollerStartsAndStopsWhenEnabled(t *testing.T) {
+	runtime, err := openRuntime(config.Config{
+		DataDir:              t.TempDir(),
+		AnalyticsPollEnabled: true,
+		AnalyticsPollTick:    time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("openRuntime returned error: %v", err)
+	}
+	done := runtime.analyticsPollDone
+	if runtime.analyticsPollCancel == nil || done == nil {
+		t.Fatal("analytics poller did not start with enabled configuration")
+	}
+	if err := runtime.close(context.Background()); err != nil {
+		t.Fatalf("runtime.close returned error: %v", err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("analytics poller was not stopped before runtime.close returned")
+	}
+}
+
+func TestAnalyticsPollerShutdownDeadlineKeepsDatabaseOpen(t *testing.T) {
+	analyticsStore, err := analytics.OpenStore(filepath.Join(t.TempDir(), "analytics.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &serviceRuntime{analyticsDB: analyticsStore}
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	runtime.startAnalyticsPoller(true, time.Millisecond, func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return nil
+	})
+	done := runtime.analyticsPollDone
+	var closeReturned chan struct{}
+	var closeErr error
+	defer func() {
+		if runtime.analyticsPollCancel != nil {
+			runtime.analyticsPollCancel()
+		}
+		close(release)
+		<-done
+		if closeReturned != nil {
+			<-closeReturned
+		}
+		if errors.Is(closeErr, context.DeadlineExceeded) {
+			if err := runtime.close(context.Background()); err != nil {
+				t.Errorf("runtime.close after worker release: %v", err)
+			}
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analytics poller did not start callback")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	closeReturned = make(chan struct{})
+	go func() {
+		closeErr = runtime.close(ctx)
+		close(closeReturned)
+	}()
+	select {
+	case <-closeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("runtime.close did not honor shutdown deadline")
+	}
+	if !errors.Is(closeErr, context.DeadlineExceeded) {
+		t.Fatalf("runtime.close error = %v, want context deadline exceeded", closeErr)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("analytics callback was not canceled")
+	}
+	if _, err := analyticsStore.Summary(context.Background()); err != nil {
+		t.Fatalf("analytics database was closed while callback remained active: %v", err)
+	}
+}
+
+func TestAnalyticsPollerUsesOneWorkerAndQuietlyHandlesNoRows(t *testing.T) {
+	runtime := &serviceRuntime{}
+	started := make(chan struct{}, 2)
+	run := func(ctx context.Context) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		return sql.ErrNoRows
+	}
+	runtime.startAnalyticsPoller(true, time.Millisecond, run)
+	runtime.startAnalyticsPoller(true, time.Millisecond, run)
+	defer runtime.stopAnalyticsPoller(context.Background())
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analytics poller did not run")
+	}
+	select {
+	case <-started:
+		t.Fatal("analytics poller started more than one worker")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestGatewaySecretIsNotReturnedByRuntimeConstruction(t *testing.T) {
 	runner, err := newJudgmentRunner(config.Config{
 		AIGatewayBaseURL:    "http://127.0.0.1:1/v1",

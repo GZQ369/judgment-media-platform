@@ -55,6 +55,20 @@ type PublicationGateway interface {
 	Reconcile(context.Context, string) (Publication, error)
 }
 
+// PublicationDiscovery is an optional read-only contract for analytics
+// discovery. It is separate from PublicationGateway so existing fakes remain
+// valid.
+type PublicationDiscovery interface {
+	ListForAnalytics(context.Context, string, int) ([]Publication, error)
+}
+
+// PublicationSnapshotReader is an optional direct-read contract for scheduled
+// analytics. Unlike PublicationGateway.Get, it must not recover leases or
+// modify publication state.
+type PublicationSnapshotReader interface {
+	GetForAnalytics(context.Context, string) (Publication, error)
+}
+
 // PublicationGatewayFunc is useful for small adapters and tests.
 type PublicationGatewayFunc struct {
 	GetFunc       func(context.Context, string) (Publication, error)

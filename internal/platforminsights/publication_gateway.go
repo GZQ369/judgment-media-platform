@@ -38,6 +38,17 @@ func (a publicationServiceGatewayAdapter) Get(ctx context.Context, id string) (P
 	return neutralPublication(p), nil
 }
 
+func (a publicationServiceGatewayAdapter) GetForAnalytics(ctx context.Context, id string) (Publication, error) {
+	if a.service == nil {
+		return Publication{}, publicationcore.ErrNotFound
+	}
+	p, err := a.service.GetForAnalytics(ctx, id)
+	if err != nil {
+		return Publication{}, err
+	}
+	return neutralPublication(p), nil
+}
+
 func (a publicationServiceGatewayAdapter) Reconcile(ctx context.Context, id string) (Publication, error) {
 	if a.service == nil {
 		return Publication{}, publicationcore.ErrNotFound
@@ -52,8 +63,33 @@ func (a publicationServiceGatewayAdapter) Reconcile(ctx context.Context, id stri
 	return neutralPublication(p), nil
 }
 
+func (a publicationServiceGatewayAdapter) ListForAnalytics(ctx context.Context, afterID string, limit int) ([]Publication, error) {
+	if a.service == nil {
+		return nil, publicationcore.ErrNotFound
+	}
+	items, err := a.service.ListForAnalytics(ctx, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return neutralPublications(items), nil
+}
+
 func (a publicationGatewayAdapter) Get(ctx context.Context, id string) (Publication, error) {
+	if a.orchestrator == nil {
+		return Publication{}, publicationcore.ErrNotFound
+	}
 	p, err := a.orchestrator.Get(ctx, id)
+	if err != nil {
+		return Publication{}, err
+	}
+	return neutralPublication(p), nil
+}
+
+func (a publicationGatewayAdapter) GetForAnalytics(ctx context.Context, id string) (Publication, error) {
+	if a.orchestrator == nil {
+		return Publication{}, publicationcore.ErrNotFound
+	}
+	p, err := a.orchestrator.GetForAnalytics(ctx, id)
 	if err != nil {
 		return Publication{}, err
 	}
@@ -71,6 +107,25 @@ func (a publicationGatewayAdapter) Reconcile(ctx context.Context, id string) (Pu
 		return neutral, err
 	}
 	return neutralPublication(p), nil
+}
+
+func (a publicationGatewayAdapter) ListForAnalytics(ctx context.Context, afterID string, limit int) ([]Publication, error) {
+	if a.orchestrator == nil {
+		return nil, publicationcore.ErrNotFound
+	}
+	items, err := a.orchestrator.ListForAnalytics(ctx, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return neutralPublications(items), nil
+}
+
+func neutralPublications(items []publicationcore.Publication) []Publication {
+	result := make([]Publication, 0, len(items))
+	for _, item := range items {
+		result = append(result, neutralPublication(item))
+	}
+	return result
 }
 
 func neutralPublication(p publicationcore.Publication) Publication {

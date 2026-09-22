@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/GZQ369/judgment-media-platform/internal/analytics"
 	"github.com/GZQ369/judgment-media-platform/internal/api"
@@ -110,15 +111,17 @@ func run() int {
 }
 
 type serviceRuntime struct {
-	pipeline      *pipeline.Service
-	distribution  *distribution.Service
-	pipelineStore *pipeline.Store
-	runLedger     *runstore.Store
-	publication   *publication.Service
-	publicationDB *sql.DB
-	analytics     *analytics.Service
-	analyticsDB   *analytics.Store
-	egoAdapters   []*egopublisher.Adapter
+	pipeline            *pipeline.Service
+	distribution        *distribution.Service
+	pipelineStore       *pipeline.Store
+	runLedger           *runstore.Store
+	publication         *publication.Service
+	publicationDB       *sql.DB
+	analytics           *analytics.Service
+	analyticsDB         *analytics.Store
+	analyticsPollCancel context.CancelFunc
+	analyticsPollDone   chan struct{}
+	egoAdapters         []*egopublisher.Adapter
 }
 
 func openRuntime(cfg config.Config) (*serviceRuntime, error) {
@@ -180,13 +183,20 @@ func openRuntime(cfg config.Config) (*serviceRuntime, error) {
 		return nil, fmt.Errorf("analytics store open failed: %w", err)
 	}
 	runtime.analyticsDB = analyticsStore
-	runtime.analytics = analytics.NewService(analyticsStore, platforminsights.NewPublicationServiceGateway(publicationService),
+	analyticsGateway := platforminsights.NewPublicationServiceGateway(publicationService)
+	analyticsProviders := []platforminsights.MetricsProvider{
 		platforminsights.NewDouyinMetricsProvider(platforminsights.DouyinMetricsConfig{
 			AccessToken: cfg.DouyinAccessToken, OpenID: cfg.DouyinOpenID, Scope: cfg.DouyinMetricsScope, APIBaseURL: cfg.DouyinAPIBaseURL,
 		}),
 		platforminsights.NewUnavailableProvider("xiaohongshu", "xiaohongshu", "no approved read-only metrics API is configured"),
 		platforminsights.NewUnavailableProvider("bilibili", "bilibili", "no approved read-only metrics API is configured"),
-	)
+	}
+	runtime.analytics = analytics.NewServiceWithOptions(analyticsStore, analyticsGateway, analyticsProviders, analytics.Options{
+		PollEnabled:     cfg.AnalyticsPollEnabled,
+		ReviewInterval:  cfg.AnalyticsReviewInterval,
+		MetricsInterval: cfg.AnalyticsMetricsInterval,
+		MetricsWindow:   cfg.AnalyticsMetricsWindow,
+	})
 
 	var worker mediaworker.Worker
 	if cfg.MediaWorkerPython != "" && cfg.MediaWorkerScript != "" {
@@ -221,6 +231,7 @@ func openRuntime(cfg config.Config) (*serviceRuntime, error) {
 		_ = runtime.close(context.Background())
 		return nil, fmt.Errorf("pipeline worker start failed: %w", err)
 	}
+	runtime.startAnalyticsPoller(cfg.AnalyticsPollEnabled, cfg.AnalyticsPollTick, runtime.analytics.RunScheduledOnce)
 	return runtime, nil
 }
 
@@ -343,6 +354,7 @@ func (r *serviceRuntime) close(ctx context.Context) error {
 		return nil
 	}
 	var shutdownErrs []error
+	analyticsPollErr := r.stopAnalyticsPoller(ctx)
 	if r.pipeline != nil {
 		if err := r.pipeline.Stop(ctx); err != nil {
 			shutdownErrs = append(shutdownErrs, fmt.Errorf("pipeline shutdown: %w", err))
@@ -352,6 +364,10 @@ func (r *serviceRuntime) close(ctx context.Context) error {
 		if err := r.distribution.Stop(ctx); err != nil {
 			shutdownErrs = append(shutdownErrs, fmt.Errorf("distribution shutdown: %w", err))
 		}
+	}
+	if analyticsPollErr != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("analytics poller shutdown: %w", analyticsPollErr))
+		return errors.Join(shutdownErrs...)
 	}
 	if r.analyticsDB != nil {
 		if err := r.analyticsDB.Close(); err != nil {
@@ -379,6 +395,58 @@ func (r *serviceRuntime) close(ctx context.Context) error {
 		}
 	}
 	return errors.Join(shutdownErrs...)
+}
+
+func (r *serviceRuntime) startAnalyticsPoller(enabled bool, interval time.Duration, run func(context.Context) error) {
+	if r == nil || !enabled || run == nil || r.analyticsPollCancel != nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	r.analyticsPollCancel = cancel
+	r.analyticsPollDone = done
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := run(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
+					slog.Error("analytics scheduled run failed", "error", err)
+				}
+				if ctx.Err() != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (r *serviceRuntime) stopAnalyticsPoller(ctx context.Context) error {
+	if r == nil || r.analyticsPollCancel == nil {
+		return nil
+	}
+	r.analyticsPollCancel()
+	if r.analyticsPollDone != nil {
+		select {
+		case <-r.analyticsPollDone:
+		case <-ctx.Done():
+			select {
+			case <-r.analyticsPollDone:
+			default:
+				return ctx.Err()
+			}
+		}
+	}
+	r.analyticsPollCancel = nil
+	r.analyticsPollDone = nil
+	return nil
 }
 
 func newServer(cfg config.Config, handler http.Handler) *http.Server {
