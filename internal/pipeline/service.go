@@ -253,21 +253,14 @@ func (s *Service) Cancel(ctx context.Context, id string) (PipelineRun, error) {
 // Retry requeues a failed, blocked, or cancelled pipeline. Child idempotency
 // keys remain stable, so already-created child runs are reused.
 func (s *Service) Retry(ctx context.Context, id string) (PipelineRun, error) {
-	run, err := s.store.GetRun(ctx, id)
+	queued, err := s.store.RetryRun(ctx, id)
 	if err != nil {
 		return PipelineRun{}, err
 	}
-	if run.Status == PipelineStatusQueued || run.Status == PipelineStatusRunning || run.Status == PipelineStatusDistributionReady {
-		return run, nil
-	}
-	if err := s.store.SetAttempt(ctx, id, run.Attempt+1); err != nil {
-		return PipelineRun{}, err
-	}
-	if err := s.store.UpdateRun(ctx, id, PipelineStatusQueued, "retry_queued", nil, nil, map[string]any{"attempt": run.Attempt + 1}); err != nil {
-		return PipelineRun{}, err
-	}
-	if err := s.enqueue(id); err != nil && !errors.Is(err, ErrServiceStopped) {
-		return PipelineRun{}, err
+	if queued {
+		if err := s.enqueue(id); err != nil && !errors.Is(err, ErrServiceStopped) {
+			return PipelineRun{}, err
+		}
 	}
 	return s.store.GetRun(ctx, id)
 }
@@ -392,16 +385,20 @@ func (s *Service) process(ctx context.Context, id string) {
 }
 
 func (s *Service) execute(ctx context.Context, run PipelineRun, lease Lease) error {
-	if s.judgment == nil {
-		block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "judgment_workflow", Message: "judgment workflow is not configured", Retryable: true}
-		return s.store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "capability_blocked", block, nil, map[string]any{"capability": block.Capability})
-	}
-	result, err := s.judgment.Run(ctx, run.Request.Topic)
-	if err != nil {
-		if block := capabilityBlock(err); block != nil {
+	result := orchestration.Result{Evidence: run.Research, Judgment: run.Judgment, Thesis: run.Thesis, Atoms: run.Atoms}
+	if len(run.Atoms) == 0 {
+		if s.judgment == nil {
+			block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "judgment_workflow", Message: "judgment workflow is not configured", Retryable: true}
 			return s.store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "capability_blocked", block, nil, map[string]any{"capability": block.Capability})
 		}
-		return err
+		var err error
+		result, err = s.judgment.Run(ctx, run.Request.Topic)
+		if err != nil {
+			if block := capabilityBlock(err); block != nil {
+				return s.store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "capability_blocked", block, nil, map[string]any{"capability": block.Capability})
+			}
+			return err
+		}
 	}
 	if len(result.Atoms) == 0 {
 		return fmt.Errorf("judgment workflow returned no content atoms")
@@ -411,8 +408,10 @@ func (s *Service) execute(ctx context.Context, run PipelineRun, lease Lease) err
 			return fmt.Errorf("judgment workflow returned invalid atom: %w", err)
 		}
 	}
-	if err := s.store.SaveWorkflowFenced(ctx, run.ID, lease, result); err != nil {
-		return err
+	if len(run.Atoms) == 0 {
+		if err := s.store.SaveWorkflowFenced(ctx, run.ID, lease, result); err != nil {
+			return err
+		}
 	}
 	if s.distribution == nil {
 		block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "distribution_starter", Message: "distribution starter is not configured", Retryable: true}
@@ -432,6 +431,14 @@ func (s *Service) execute(ctx context.Context, run PipelineRun, lease Lease) err
 			child := ChildRun{IdempotencyKey: key, AtomID: atom.ID, Target: target}
 			if prior != nil {
 				child = *prior
+				current, err := s.distribution.GetRun(ctx, child.ID)
+				if err != nil {
+					return err
+				}
+				child.Status = current.Status
+				child.CapabilityBlock = current.CapabilityBlock
+				child.Error = current.Error
+				child.UpdatedAt = current.UpdatedAt
 			} else {
 				request := domain.DistributionRequest{IdempotencyKey: key, Atom: cloneAtom(atom), Targets: []domain.DistributionTarget{target}, Template: run.Request.Template, VariantCount: run.Request.VariantCount, Media: run.Request.Media}
 				created, _, err := s.distribution.StartRun(ctx, request)
@@ -443,6 +450,25 @@ func (s *Service) execute(ctx context.Context, run PipelineRun, lease Lease) err
 				}
 				child.ID = created.ID
 				child.Status = created.Status
+			}
+			if run.Attempt > 0 && child.RetryAttempt < run.Attempt {
+				retrier, ok := s.distribution.(DistributionRetryOnce)
+				if !ok {
+					block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "distribution_retry_once", Message: "distribution dependency does not support durable RetryOnce", Retryable: true}
+					return s.store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "capability_blocked", block, nil, map[string]any{"capability": block.Capability, "child_run_id": child.ID})
+				}
+				retried, err := retrier.RetryOnce(ctx, run.ID, run.Attempt, child.ID)
+				if err != nil {
+					if block := capabilityBlock(err); block != nil {
+						return s.store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "capability_blocked", block, nil, map[string]any{"capability": block.Capability})
+					}
+					return err
+				}
+				child.Status = retried.Status
+				child.CapabilityBlock = retried.CapabilityBlock
+				child.Error = retried.Error
+				child.UpdatedAt = retried.UpdatedAt
+				child.RetryAttempt = run.Attempt
 			}
 			children = append(children, child)
 			// Persist every successful child immediately. If a later fan-out

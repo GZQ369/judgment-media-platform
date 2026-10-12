@@ -443,16 +443,33 @@ func (s *Store) updateRun(ctx context.Context, id string, lease *Lease, status P
 	return tx.Commit()
 }
 
-// SetAttempt records a retry attempt.
-func (s *Store) SetAttempt(ctx context.Context, id string, attempt int) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE pipeline_runs SET attempt=?,updated_at=?,checkpoint=? WHERE id=?`, attempt, time.Now().UTC().Format(time.RFC3339Nano), "retry_requested", id)
+// RetryRun atomically requeues a terminal run, advances its attempt, and
+// revokes the previous worker lease. The bool reports whether it transitioned.
+func (s *Store) RetryRun(ctx context.Context, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if n, _ := result.RowsAffected(); n != 1 {
-		return ErrRunNotFound
+	defer tx.Rollback()
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	var attempt int
+	err = tx.QueryRowContext(ctx, `UPDATE pipeline_runs SET attempt=attempt+1,status=?,checkpoint=?,capability_block_json=NULL,error_json=NULL,finished_at=NULL,updated_at=? WHERE id=? AND status IN (?,?,?) RETURNING attempt`, PipelineStatusQueued, "retry_queued", stamp, id, PipelineStatusBlocked, PipelineStatusFailed, PipelineStatusCancelled).Scan(&attempt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pipeline_leases WHERE run_id=?`, id); err != nil {
+		return false, err
+	}
+	if err := insertEventTx(ctx, tx, id, string(PipelineStatusQueued), "retry_queued", map[string]any{"attempt": attempt}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // AppendEvent appends an event to the pipeline ledger.

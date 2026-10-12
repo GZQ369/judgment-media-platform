@@ -11,6 +11,7 @@ import (
 
 	"github.com/GZQ369/judgment-media-platform/internal/domain"
 	"github.com/GZQ369/judgment-media-platform/internal/orchestration"
+	"github.com/GZQ369/judgment-media-platform/internal/runstore"
 	_ "modernc.org/sqlite"
 )
 
@@ -64,19 +65,78 @@ INSERT INTO pipeline_runs(id) VALUES ('legacy-pipeline');`)
 type fakeJudgment struct {
 	result orchestration.Result
 	err    error
+	calls  *int
 }
 
 func (f fakeJudgment) Run(context.Context, domain.ResearchTopic) (orchestration.Result, error) {
+	if f.calls != nil {
+		*f.calls++
+	}
 	return f.result, f.err
 }
 
 type fakeDistribution struct {
-	mu         sync.Mutex
-	starts     []domain.DistributionRequest
-	runs       map[string]domain.Run
-	statuses   []domain.RunStatus
-	startErrAt int
-	startErr   error
+	mu             sync.Mutex
+	starts         []domain.DistributionRequest
+	runs           map[string]domain.Run
+	statuses       []domain.RunStatus
+	startErrAt     int
+	startErr       error
+	retries        int
+	retryErrBefore error
+	retryErrAfter  error
+	receipts       map[fakeRetryKey]bool
+}
+
+type fakeRetryKey struct {
+	parentID      string
+	parentAttempt int
+	childID       string
+}
+
+func (f *fakeDistribution) RetryOnce(_ context.Context, parentID string, parentAttempt int, id string) (domain.Run, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	operation := fakeRetryKey{parentID, parentAttempt, id}
+	if f.receipts == nil {
+		f.receipts = make(map[fakeRetryKey]bool)
+	}
+	if f.receipts[operation] {
+		for _, run := range f.runs {
+			if run.ID == id {
+				return run, nil
+			}
+		}
+	}
+	f.retries++
+	if f.retryErrBefore != nil {
+		err := f.retryErrBefore
+		f.retryErrBefore = nil
+		return domain.Run{}, err
+	}
+	for key, run := range f.runs {
+		if run.ID == id {
+			if run.Status == domain.RunStatusBlocked || run.Status == domain.RunStatusFailed || run.Status == domain.RunStatusCancelled {
+				run.Status = domain.RunStatusPackageReady
+			}
+			run.UpdatedAt = time.Now().UTC()
+			f.runs[key] = run
+			f.receipts[operation] = true
+			if f.retryErrAfter != nil {
+				err := f.retryErrAfter
+				f.retryErrAfter = nil
+				return domain.Run{}, err
+			}
+			return run, nil
+		}
+	}
+	return domain.Run{}, errors.New("child not found")
+}
+
+type starterOnly struct{ DistributionStarter }
+
+func (starterOnly) Retry(context.Context, string) (domain.Run, error) {
+	return domain.Run{}, errors.New("ordinary Retry must not be used")
 }
 
 func newFakeDistribution(status domain.RunStatus) *fakeDistribution {
@@ -257,6 +317,371 @@ func TestServiceChildBlockedAndIdempotencyReplay(t *testing.T) {
 	conflict.Targets = []domain.DistributionTarget{{Platform: domain.PlatformXiaohongshu}}
 	if _, _, err := service.StartRun(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("idempotency conflict error = %v", err)
+	}
+}
+
+func TestRetryReusesSavedAtomsAndRetriesExistingChild(t *testing.T) {
+	store := openTestStore(t)
+	children := newFakeDistribution(domain.RunStatusBlocked)
+	calls := 0
+	service := NewService(store, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("stable-atom")}}, calls: &calls}, children, Options{PollInterval: time.Millisecond, PollTimeout: time.Second})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	run, _, err := service.StartRun(context.Background(), PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run = waitPipeline(t, service, run.ID, PipelineStatusBlocked)
+	firstID, firstKey := run.Children[0].ID, run.Children[0].IdempotencyKey
+	if _, err := service.Retry(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run = waitPipeline(t, service, run.ID, PipelineStatusDistributionReady)
+	if calls != 1 {
+		t.Fatalf("judgment calls=%d, want 1", calls)
+	}
+	if children.retries != 1 {
+		t.Fatalf("child retries=%d, want 1", children.retries)
+	}
+	if len(children.starts) != 1 || run.Children[0].ID != firstID || run.Children[0].IdempotencyKey != firstKey {
+		t.Fatalf("child duplicated or changed: starts=%d children=%#v", len(children.starts), run.Children)
+	}
+}
+
+func TestRetryWithoutChildRetryCapabilityBlocks(t *testing.T) {
+	store := openTestStore(t)
+	children := newFakeDistribution(domain.RunStatusBlocked)
+	service := NewService(store, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("a1")}}}, starterOnly{children}, Options{PollInterval: time.Millisecond})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	run, _, err := service.StartRun(context.Background(), PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPipeline(t, service, run.ID, PipelineStatusBlocked)
+	if _, err := service.Retry(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run = waitPipeline(t, service, run.ID, PipelineStatusBlocked)
+	if run.CapabilityBlock == nil || run.CapabilityBlock.Capability != "distribution_retry_once" {
+		t.Fatalf("expected distribution_retry_once capability block, got %#v", run.CapabilityBlock)
+	}
+	if len(children.starts) != 1 {
+		t.Fatalf("child starts=%d, want 1", len(children.starts))
+	}
+}
+
+func TestRetryRecoversAcrossUnpersistedChildRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		before      bool
+		wantRetries int
+	}{
+		{name: "before child retry", before: true, wantRetries: 2},
+		{name: "after child retry", wantRetries: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			children := newFakeDistribution(domain.RunStatusBlocked)
+			service := NewService(store, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("a1")}}}, children, Options{PollInterval: time.Millisecond, PollTimeout: time.Second})
+			if err := service.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = service.Stop(context.Background()) })
+			run, _, err := service.StartRun(context.Background(), PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run = waitPipeline(t, service, run.ID, PipelineStatusBlocked)
+			childID := run.Children[0].ID
+			children.mu.Lock()
+			if tc.before {
+				children.retryErrBefore = context.Canceled
+			} else {
+				children.retryErrAfter = context.Canceled
+			}
+			children.mu.Unlock()
+			if _, err := service.Retry(context.Background(), run.ID); err != nil {
+				t.Fatal(err)
+			}
+			run = waitPipeline(t, service, run.ID, PipelineStatusDistributionReady)
+			if children.retries != tc.wantRetries || len(children.starts) != 1 || run.Children[0].ID != childID {
+				t.Fatalf("retries=%d starts=%d children=%#v", children.retries, len(children.starts), run.Children)
+			}
+		})
+	}
+}
+
+func TestRetryUsesCurrentChildStatus(t *testing.T) {
+	store := openTestStore(t)
+	children := newFakeDistribution(domain.RunStatusBlocked)
+	service := NewService(store, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("a1")}}}, children, Options{PollInterval: time.Millisecond})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	run, _, err := service.StartRun(context.Background(), PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run = waitPipeline(t, service, run.ID, PipelineStatusBlocked)
+	if err := service.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.AcquireLease(context.Background(), run.ID, "stale-observation", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := append([]ChildRun(nil), run.Children...)
+	stale[0].Status = domain.RunStatusRunning
+	if err := store.SetChildrenFenced(context.Background(), run.ID, lease, stale, "stale_child_status"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReleaseLeaseToken(context.Background(), run.ID, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Retry(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run = waitPipeline(t, service, run.ID, PipelineStatusDistributionReady)
+	if children.retries != 1 || len(children.starts) != 1 || run.Children[0].ID != stale[0].ID {
+		t.Fatalf("retries=%d starts=%d children=%#v", children.retries, len(children.starts), run.Children)
+	}
+}
+
+func TestRetryRunAtomicRollbackAndRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "retry-pipeline.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.CreateRun(ctx, PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := &domain.CapabilityBlock{Code: "CAPABILITY_BLOCKED", Capability: "test", Message: "temporary", Retryable: true}
+	if err := store.UpdateRun(ctx, run.ID, PipelineStatusBlocked, "capability_blocked", block, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.AcquireLease(ctx, run.ID, "old-worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TEMP TRIGGER fail_retry_event BEFORE INSERT ON pipeline_events WHEN NEW.checkpoint='retry_queued' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.RetryRun(ctx, run.ID); err == nil || changed {
+		t.Fatalf("injected failure: changed=%v err=%v", changed, err)
+	}
+	stillBlocked, err := store.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillBlocked.Status != PipelineStatusBlocked || stillBlocked.Attempt != 0 || stillBlocked.Checkpoint != "capability_blocked" || stillBlocked.CapabilityBlock == nil || stillBlocked.FinishedAt == nil {
+		t.Fatalf("retry left partial state: %#v", stillBlocked)
+	}
+	if err := store.RenewLease(ctx, run.ID, lease, time.Minute); err != nil {
+		t.Fatalf("failed transaction revoked lease: %v", err)
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER fail_retry_event`); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("a1")}}}, newFakeDistribution(domain.RunStatusPackageReady), Options{PollInterval: time.Millisecond})
+	queued, err := service.Retry(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Status != PipelineStatusQueued || queued.Attempt != 1 || queued.Checkpoint != "retry_queued" || queued.CapabilityBlock != nil || queued.Error != nil || queued.FinishedAt != nil {
+		t.Fatalf("atomic retry state: %#v", queued)
+	}
+	if err := store.UpdateRunFenced(ctx, run.ID, lease, PipelineStatusBlocked, "stale", nil, nil, nil); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("old lease was not fenced: %v", err)
+	}
+	if again, err := service.Retry(ctx, run.ID); err != nil || again.Attempt != 1 {
+		t.Fatalf("duplicate retry: attempt=%d err=%v", again.Attempt, err)
+	}
+	events, err := store.ListEvents(ctx, run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryEvents := 0
+	for _, event := range events {
+		if event.Checkpoint == "retry_queued" {
+			retryEvents++
+			if event.Payload["attempt"] != float64(1) {
+				t.Fatalf("retry event payload: %#v", event.Payload)
+			}
+		}
+	}
+	if retryEvents != 1 {
+		t.Fatalf("retry events=%d, want 1", retryEvents)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	service = NewService(reopened, fakeJudgment{result: orchestration.Result{Atoms: []domain.ContentAtom{testAtom("a1")}}}, newFakeDistribution(domain.RunStatusPackageReady), Options{PollInterval: time.Millisecond})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	completed := waitPipeline(t, service, run.ID, PipelineStatusDistributionReady)
+	if completed.Attempt != 1 || len(completed.Children) != 1 {
+		t.Fatalf("recovered retry: %#v", completed)
+	}
+}
+
+type receiptDistribution struct {
+	store        *runstore.Store
+	afterReceipt func(string)
+	creates      int
+	callCount    int
+}
+
+func (d *receiptDistribution) StartRun(ctx context.Context, request domain.DistributionRequest) (domain.Run, bool, error) {
+	run, created, err := d.store.CreateRun(ctx, request)
+	if created {
+		d.creates++
+	}
+	return run, created, err
+}
+
+func (d *receiptDistribution) GetRun(ctx context.Context, id string) (domain.Run, error) {
+	return d.store.GetRun(ctx, id)
+}
+
+func (d *receiptDistribution) RetryOnce(ctx context.Context, parent string, attempt int, child string) (domain.Run, error) {
+	d.callCount++
+	run, err := d.store.RetryOnce(ctx, parent, attempt, child)
+	if err == nil && d.afterReceipt != nil {
+		d.afterReceipt(child)
+	}
+	return run, err
+}
+
+func TestRetryOnceSurvivesParentWriteFailureAndChildFailsAgain(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "new child association"
+		if existing {
+			name = "existing blocked child"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			parentStore := openTestStore(t)
+			childPath := filepath.Join(t.TempDir(), "children.db")
+			childStore, err := runstore.Open(childPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = childStore.Close() })
+			distribution := &receiptDistribution{store: childStore}
+			request := PipelineRequest{Topic: testTopic(), Targets: []domain.DistributionTarget{{Platform: domain.PlatformDouyin}}}
+			parent, _, err := parentStore.CreateRun(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease, err := parentStore.AcquireLease(ctx, parent.ID, "setup", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			atom := testAtom("stable")
+			if err := parentStore.SaveWorkflowFenced(ctx, parent.ID, lease, orchestration.Result{Atoms: []domain.ContentAtom{atom}}); err != nil {
+				t.Fatal(err)
+			}
+			key := ChildIdempotencyKey(parent.ID, atom.ID, request.Targets[0])
+			if existing {
+				child, _, err := distribution.StartRun(ctx, domain.DistributionRequest{IdempotencyKey: key, Atom: cloneAtom(atom), Targets: request.Targets})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := childStore.UpdateRun(ctx, child.ID, domain.RunStatusBlocked, "blocked", nil, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := parentStore.SetChildrenFenced(ctx, parent.ID, lease, []ChildRun{{ID: child.ID, IdempotencyKey: key, AtomID: atom.ID, Target: request.Targets[0], Status: domain.RunStatusBlocked}}, "child_created"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := parentStore.UpdateRunFenced(ctx, parent.ID, lease, PipelineStatusFailed, "failed", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(parentStore, nil, distribution, Options{PollInterval: time.Millisecond, PollTimeout: time.Second})
+			parent, err = service.Retry(ctx, parent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease, err = parentStore.AcquireLease(ctx, parent.ID, "interrupted", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := parentStore.UpdateRunFenced(ctx, parent.ID, lease, PipelineStatusRunning, "started", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			interrupted, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var childID string
+			distribution.afterReceipt = func(id string) {
+				childID = id
+				if err := childStore.UpdateRun(ctx, id, domain.RunStatusFailed, "failed_again", nil, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				cancel()
+			}
+			if err := service.execute(interrupted, parent, lease); !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected interrupted parent write: %v", err)
+			}
+			before, err := parentStore.GetRun(ctx, parent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(before.Children) > 0 && before.Children[0].RetryAttempt != 0 {
+				t.Fatal("interrupted parent persisted retry marker")
+			}
+			if !existing && len(before.Children) != 0 {
+				t.Fatal("new association unexpectedly persisted")
+			}
+			if err := parentStore.ReleaseLeaseToken(ctx, parent.ID, lease); err != nil {
+				t.Fatal(err)
+			}
+			if err := childStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			childStore, err = runstore.Open(childPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			distribution.store, distribution.afterReceipt = childStore, nil
+			if err := parentStore.RecoverRunning(ctx); err != nil {
+				t.Fatal(err)
+			}
+			service.process(ctx, parent.ID)
+			after, err := parentStore.GetRun(ctx, parent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, err := childStore.GetRun(ctx, childID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAttempt := 0
+			if existing {
+				wantAttempt = 1
+			}
+			if after.Status != PipelineStatusFailed || len(after.Children) != 1 || after.Children[0].RetryAttempt != 1 || after.Children[0].ID != childID || child.Attempt != wantAttempt || child.Status != domain.RunStatusFailed || distribution.creates != 1 || distribution.callCount != 2 {
+				t.Fatalf("replay: parent=%#v child=%#v creates=%d calls=%d", after, child, distribution.creates, distribution.callCount)
+			}
+		})
 	}
 }
 

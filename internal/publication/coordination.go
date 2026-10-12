@@ -111,27 +111,11 @@ func (s *Service) Candidate(ctx context.Context, req CandidateRequest) (Candidat
 	if !runTargetsPlatform(run, req.Platform, req.Account) {
 		return Candidate{}, fmt.Errorf("%w: target platform/account mismatch", ErrCandidateChanged)
 	}
-	packagePath, video := "", domain.Artifact{}
-	coverArtifacts := make(map[string]domain.Artifact)
-	for _, a := range run.Artifacts {
-		switch {
-		case a.Kind == "package" || a.ID == "publish_package" || filepath.Base(a.Path) == "publish_package.json":
-			if packagePath == "" {
-				packagePath = a.Path
-			}
-		case (a.ID == "rendered-video" && (a.Kind == "video" || a.Kind == "rendered-video")) || (a.Kind == "rendered-video"):
-			if video.Path == "" {
-				video = a
-			}
-		case a.Kind == "cover" || a.Kind == "cover-image" || a.Kind == "thumbnail" || a.ID == "cover" || a.ID == "cover-image" || a.ID == "thumbnail" || strings.HasPrefix(a.ID, "cover-"):
-			if role := coverRole(a); role != "" && a.Path != "" {
-				if _, exists := coverArtifacts[role]; !exists {
-					coverArtifacts[role] = a
-				}
-			}
-		}
+	packageArtifact, video, coverArtifacts, err := candidateArtifacts(run)
+	if err != nil {
+		return Candidate{}, err
 	}
-	if packagePath == "" {
+	if packageArtifact.Path == "" {
 		return Candidate{}, fmt.Errorf("%w: publish_package.json", ErrArtifactMissing)
 	}
 	if video.Path == "" {
@@ -140,9 +124,15 @@ func (s *Service) Candidate(ctx context.Context, req CandidateRequest) (Candidat
 	if len(coverArtifacts) == 0 {
 		return Candidate{}, fmt.Errorf("%w: cover", ErrArtifactMissing)
 	}
-	raw, err := readBounded(packagePath, s.maxPackageBytes)
+	raw, err := readBounded(packageArtifact.Path, s.maxPackageBytes)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("%w: publish package: %v", ErrArtifactMissing, err)
+	}
+	if packageArtifact.SHA256 != "" {
+		digest := sha256.Sum256(raw)
+		if !strings.EqualFold(packageArtifact.SHA256, hex.EncodeToString(digest[:])) {
+			return Candidate{}, fmt.Errorf("%w: publish package digest changed", ErrCandidateChanged)
+		}
 	}
 	var project domain.VideoProject
 	if err := json.Unmarshal(raw, &project); err != nil {
@@ -187,6 +177,9 @@ func (s *Service) Candidate(ctx context.Context, req CandidateRequest) (Candidat
 	if err != nil {
 		return Candidate{}, fmt.Errorf("%w: rendered video: %v", ErrArtifactMissing, err)
 	}
+	if video.SHA256 != "" && !strings.EqualFold(video.SHA256, videoSHA) {
+		return Candidate{}, fmt.Errorf("%w: rendered video digest changed", ErrCandidateChanged)
+	}
 	coverAssets, err := buildCoverAssets(coverArtifacts)
 	if err != nil {
 		return Candidate{}, err
@@ -208,15 +201,199 @@ func coverRole(artifact domain.Artifact) string {
 	id := strings.ToLower(strings.TrimSpace(artifact.ID))
 	base := strings.ToLower(filepath.Base(artifact.Path))
 	switch {
-	case id == "cover-portrait-3x4" || base == "cover-portrait-3x4.png":
+	case id == "cover-portrait-3x4" || manifestArtifactID(artifact) == "cover-portrait-3x4" || base == "cover-portrait-3x4.png":
 		return "portrait_3x4"
-	case id == "cover-landscape-4x3" || base == "cover-landscape-4x3.png":
+	case id == "cover-landscape-4x3" || manifestArtifactID(artifact) == "cover-landscape-4x3" || base == "cover-landscape-4x3.png":
 		return "landscape_4x3"
-	case id == "cover" || id == "cover-image" || id == "thumbnail" || base == "cover.png" || base == "thumbnail.png":
+	case id == "cover" || id == "cover-image" || id == "thumbnail" || manifestArtifactID(artifact) == "cover" || base == "cover.png" || base == "thumbnail.png":
 		return "general"
 	default:
 		return ""
 	}
+}
+
+func manifestArtifactID(artifact domain.Artifact) string {
+	value, _ := artifact.Metadata["manifest_artifact_id"].(string)
+	return strings.TrimSpace(value)
+}
+
+func candidateArtifacts(run domain.Run) (domain.Artifact, domain.Artifact, map[string]domain.Artifact, error) {
+	var packageArtifacts []domain.Artifact
+	var authoritativeVideo, legacyVideo []domain.Artifact
+	authoritativeCovers := make(map[string][]domain.Artifact)
+	legacyCovers := make(map[string][]domain.Artifact)
+	hasManifestArtifacts := false
+	hasBatchMetadata := false
+	invalidCurrentBatchArtifact := false
+	for _, artifact := range run.Artifacts {
+		if isVideoArtifact(artifact, manifestArtifactID(artifact)) || coverRole(artifact) != "" {
+			if _, ok := artifact.Metadata["attempt"]; ok {
+				hasBatchMetadata = true
+			}
+		}
+	}
+
+	for _, artifact := range run.Artifacts {
+		if artifact.Kind == "package" || artifact.ID == "publish_package" || filepath.Base(artifact.Path) == "publish_package.json" {
+			packageArtifacts = append(packageArtifacts, artifact)
+		}
+		manifestID := manifestArtifactID(artifact)
+		if manifestID != "" {
+			hasManifestArtifacts = true
+		}
+		isAuthoritative := manifestID != "" && artifact.ID == run.ID+":"+manifestID
+		isVideo := isVideoArtifact(artifact, manifestID)
+		role := coverRole(artifact)
+		if hasBatchMetadata && (isVideo || role != "") {
+			attempt, ok := artifactAttempt(artifact)
+			if !ok || attempt != run.Attempt {
+				continue
+			}
+			if !isAuthoritative {
+				invalidCurrentBatchArtifact = true
+				continue
+			}
+		}
+		if isVideo {
+			if isAuthoritative {
+				authoritativeVideo = append(authoritativeVideo, artifact)
+			} else {
+				legacyVideo = append(legacyVideo, artifact)
+			}
+			continue
+		}
+		if role != "" && artifact.Path != "" {
+			if isAuthoritative {
+				authoritativeCovers[role] = append(authoritativeCovers[role], artifact)
+			} else {
+				legacyCovers[role] = append(legacyCovers[role], artifact)
+			}
+		}
+	}
+	packageArtifact, err := selectCandidatePackage(run, packageArtifacts)
+	if err != nil {
+		return domain.Artifact{}, domain.Artifact{}, nil, err
+	}
+	if invalidCurrentBatchArtifact {
+		return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current attempt artifact is not run-scoped", ErrCandidateChanged)
+	}
+
+	if len(authoritativeVideo) > 0 {
+		if len(authoritativeVideo) != 1 {
+			return domain.Artifact{}, domain.Artifact{}, nil, ambiguousArtifact("rendered video")
+		}
+		if authoritativeVideo[0].SHA256 == "" {
+			return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current rendered video has no accepted digest", ErrCandidateChanged)
+		}
+		covers, err := uniqueCoverArtifacts(authoritativeCovers)
+		if err != nil {
+			return domain.Artifact{}, domain.Artifact{}, nil, err
+		}
+		if len(covers) == 0 {
+			return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current manifest cover", ErrArtifactMissing)
+		}
+		for role, artifact := range covers {
+			if artifact.SHA256 == "" {
+				return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current cover %s has no accepted digest", ErrCandidateChanged, role)
+			}
+		}
+		return packageArtifact, authoritativeVideo[0], covers, nil
+	}
+	if hasBatchMetadata {
+		return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current attempt rendered video is missing", ErrArtifactMissing)
+	}
+
+	// A run with manifest-ledger entries but no canonical current video has no
+	// reliable current batch pointer. Never fall back to an older ledger row.
+	if len(legacyVideo) > 1 {
+		return domain.Artifact{}, domain.Artifact{}, nil, ambiguousArtifact("rendered video")
+	}
+	if hasManifestArtifacts || run.Attempt > 0 {
+		return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: current rendered video is not identified", ErrArtifactMissing)
+	}
+	if len(legacyVideo) == 0 {
+		return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: rendered video", ErrArtifactMissing)
+	}
+	covers, err := uniqueCoverArtifacts(legacyCovers)
+	if err != nil {
+		return domain.Artifact{}, domain.Artifact{}, nil, err
+	}
+	if len(covers) == 0 {
+		return domain.Artifact{}, domain.Artifact{}, nil, fmt.Errorf("%w: cover", ErrArtifactMissing)
+	}
+	return packageArtifact, legacyVideo[0], covers, nil
+}
+
+func artifactAttempt(artifact domain.Artifact) (int, bool) {
+	value, ok := artifact.Metadata["attempt"]
+	if !ok {
+		return 0, false
+	}
+	switch attempt := value.(type) {
+	case int:
+		return attempt, true
+	case int64:
+		return int(attempt), int64(int(attempt)) == attempt
+	case float64:
+		return int(attempt), float64(int(attempt)) == attempt
+	default:
+		return 0, false
+	}
+}
+
+func selectCandidatePackage(run domain.Run, artifacts []domain.Artifact) (domain.Artifact, error) {
+	if len(artifacts) == 0 {
+		return domain.Artifact{}, nil
+	}
+	hasAttempt := false
+	for _, artifact := range artifacts {
+		if _, ok := artifact.Metadata["attempt"]; ok {
+			hasAttempt = true
+			break
+		}
+	}
+	if hasAttempt {
+		var current []domain.Artifact
+		for _, artifact := range artifacts {
+			attempt, ok := artifactAttempt(artifact)
+			if ok && attempt == run.Attempt && artifact.ID == run.ID+":publish_package" && manifestArtifactID(artifact) == "publish_package" {
+				current = append(current, artifact)
+			}
+		}
+		if len(current) != 1 {
+			return domain.Artifact{}, fmt.Errorf("%w: current attempt publish package is missing or ambiguous", ErrArtifactMissing)
+		}
+		if current[0].SHA256 == "" {
+			return domain.Artifact{}, fmt.Errorf("%w: current attempt publish package has no accepted digest", ErrCandidateChanged)
+		}
+		return current[0], nil
+	}
+	if run.Attempt > 0 || len(artifacts) != 1 {
+		return domain.Artifact{}, fmt.Errorf("%w: legacy publish package is ambiguous", ErrCandidateChanged)
+	}
+	if artifacts[0].ID == run.ID+":publish_package" && artifacts[0].SHA256 == "" {
+		return domain.Artifact{}, fmt.Errorf("%w: canonical publish package has no accepted digest", ErrCandidateChanged)
+	}
+	return artifacts[0], nil
+}
+
+func isVideoArtifact(artifact domain.Artifact, manifestID string) bool {
+	return (artifact.ID == "rendered-video" && (artifact.Kind == "video" || artifact.Kind == "rendered-video")) || artifact.Kind == "rendered-video" || manifestID == "rendered-video"
+}
+
+func uniqueCoverArtifacts(byRole map[string][]domain.Artifact) (map[string]domain.Artifact, error) {
+	covers := make(map[string]domain.Artifact, len(byRole))
+	for role, artifacts := range byRole {
+		if len(artifacts) != 1 {
+			return nil, ambiguousArtifact("cover " + role)
+		}
+		covers[role] = artifacts[0]
+	}
+	return covers, nil
+}
+
+func ambiguousArtifact(label string) error {
+	return fmt.Errorf("%w: ambiguous %s", ErrCandidateChanged, label)
 }
 
 func buildCoverAssets(artifacts map[string]domain.Artifact) ([]CoverAsset, error) {
@@ -231,6 +408,9 @@ func buildCoverAssets(artifacts map[string]domain.Artifact) ([]CoverAsset, error
 		digest, err := fileSHA(artifact.Path)
 		if err != nil {
 			return nil, fmt.Errorf("%w: cover %s: %v", ErrArtifactMissing, role, err)
+		}
+		if artifact.SHA256 != "" && !strings.EqualFold(artifact.SHA256, digest) {
+			return nil, fmt.Errorf("%w: cover %s digest changed", ErrCandidateChanged, role)
 		}
 		assets = append(assets, CoverAsset{Role: role, Path: artifact.Path, SHA256: digest})
 	}

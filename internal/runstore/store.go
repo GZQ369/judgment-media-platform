@@ -109,6 +109,16 @@ CREATE TABLE IF NOT EXISTS run_leases (
   lease_until_ns INTEGER,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS distribution_retry_receipts (
+  operation_key TEXT PRIMARY KEY,
+  parent_id TEXT NOT NULL,
+  parent_attempt INTEGER NOT NULL CHECK(parent_attempt > 0),
+  child_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  child_attempt INTEGER NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('queued','noop')),
+  created_at TEXT NOT NULL,
+  UNIQUE(parent_id,parent_attempt,child_id)
+);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate runstore: %w", err)

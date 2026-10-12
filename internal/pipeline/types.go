@@ -82,6 +82,7 @@ type ChildRun struct {
 	CapabilityBlock *domain.CapabilityBlock   `json:"capability_block,omitempty"`
 	Error           *domain.RunError          `json:"error,omitempty"`
 	UpdatedAt       time.Time                 `json:"updated_at"`
+	RetryAttempt    int                       `json:"retry_attempt,omitempty"`
 }
 
 // PipelineRun is the durable parent view. DistributionReady means every
@@ -123,6 +124,12 @@ type JudgmentResult = orchestration.Result
 type DistributionStarter interface {
 	StartRun(context.Context, domain.DistributionRequest) (domain.Run, bool, error)
 	GetRun(context.Context, string) (domain.Run, error)
+}
+
+// DistributionRetryOnce consumes each parent-attempt/child operation durably.
+// A dependency with only ordinary Retry cannot provide this guarantee.
+type DistributionRetryOnce interface {
+	RetryOnce(context.Context, string, int, string) (domain.Run, error)
 }
 
 // Options controls worker recovery, lease renewal, and child polling.
