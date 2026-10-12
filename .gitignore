@@ -5,6 +5,10 @@ dist/
 *.test
 coverage.out
 
+# Python bytecode caches
+__pycache__/
+*.pyc
+
 # runtime data
 data/
 logs/
@@ -12,6 +16,7 @@ logs/
 .env.*
 !.env.example
 tmp/
+.tmp-assets-p2-tests/
 tmp/gocache/
 tmp/smoke-data*/
 tmp/server-smoke.exe

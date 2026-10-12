@@ -18,9 +18,9 @@ func contentAtomOffering(atom domain.ContentAtom) domain.OfferingInput {
 	boundary := firstText(atom.CounterPoint, "发布时同时说明证据范围和适用边界")
 	cta := firstText(atom.CTA, atom.DesiredAction, "欢迎在评论区讨论你的场景")
 	points := []string{
-		"观点：" + firstText(atom.Claim, atom.Hook),
-		"洞察：" + insight,
-		"边界：" + boundary,
+		firstText(atom.Claim, atom.Hook),
+		insight,
+		boundary,
 	}
 
 	descriptionLines := []string{

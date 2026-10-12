@@ -19,6 +19,7 @@ type ProductionSpec struct {
 	Audio                 *AudioSpec     `json:"audio,omitempty"`
 	Outputs               *OutputsSpec   `json:"outputs,omitempty"`
 	Scenes                []SceneSpec    `json:"scenes,omitempty"`
+	Assets                []AssetSpec    `json:"assets,omitempty"`
 	Render                *RenderSpec    `json:"render,omitempty"`
 	Paths                 *PathsSpec     `json:"paths,omitempty"`
 	Voice                 *VoiceSpec     `json:"voice,omitempty"`
@@ -89,6 +90,7 @@ type SceneSpec struct {
 	SegmentIDs []string       `json:"segmentIds"`
 	Props      map[string]any `json:"props,omitempty"`
 	Asset      string         `json:"asset,omitempty"`
+	AssetRef   string         `json:"assetRef,omitempty"`
 	Overlay    map[string]any `json:"overlay,omitempty"`
 }
 
@@ -155,11 +157,16 @@ type ArtifactManifest struct {
 
 // Artifact is one file owned by the worker output directory.
 type Artifact struct {
-	ID           string `json:"id"`
-	Kind         string `json:"kind"`
-	Path         string `json:"path"`
-	RelativePath string `json:"relativePath"`
-	Bytes        int64  `json:"bytes"`
-	SHA256       string `json:"sha256"`
-	MediaType    string `json:"mediaType,omitempty"`
+	ID              string  `json:"id"`
+	Kind            string  `json:"kind"`
+	Path            string  `json:"path"`
+	RelativePath    string  `json:"relativePath"`
+	Bytes           int64   `json:"bytes"`
+	SHA256          string  `json:"sha256"`
+	MediaType       string  `json:"mediaType,omitempty"`
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
+	Width           int     `json:"width,omitempty"`
+	Height          int     `json:"height,omitempty"`
+	SampleRate      int     `json:"sampleRate,omitempty"`
+	Channels        int     `json:"channels,omitempty"`
 }

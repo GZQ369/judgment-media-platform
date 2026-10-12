@@ -245,12 +245,18 @@ func buildStoryboard(platform domain.Platform, script domain.Script, offering do
 	}
 	product := offering.Title
 	if platform == domain.PlatformBilibili {
+		takeawayVoiceover := script.Body
+		takeawaySubtitle := "按证据范围理解结论"
+		if offering.DeliveryMode == "content_atom" {
+			takeawayVoiceover = "把观点放回证据范围内理解，不作超出材料的推断。"
+			takeawaySubtitle = takeawayVoiceover
+		}
 		shots := []domain.Shot{
 			{Index: 1, StartSecond: 0, EndSecond: 5, Visual: "标题卡 + 问题或结论预告", Voiceover: script.Hook, Subtitle: script.Hook, AssetType: "knowledge_hook", AssetHint: "主题标题卡、原始问题或关键画面", Transition: "直接切入", Purpose: "建立讨论问题"},
 			{Index: 2, StartSecond: 5, EndSecond: 20, Visual: "观点拆解与关键词标注", Voiceover: points[0], Subtitle: points[0], AssetType: "claim_breakdown", AssetHint: "观点文字卡、流程图或录屏", Transition: "章节切换", Purpose: "说清核心观点"},
 			{Index: 3, StartSecond: 20, EndSecond: 40, Visual: "证据引用与推理过程", Voiceover: tools.SafePoint(points, 1), Subtitle: tools.SafePoint(points, 1), AssetType: "evidence_reference", AssetHint: "证据来源、数据截图或引用卡", Transition: "重点放大", Purpose: "保留可复核依据"},
 			{Index: 4, StartSecond: 40, EndSecond: 60, Visual: "反方观点和适用边界", Voiceover: tools.SafePoint(points, 2), Subtitle: tools.SafePoint(points, 2), AssetType: "counterpoint", AssetHint: "限制条件、反例或对比图", Transition: "左右对照", Purpose: "避免过度概括"},
-			{Index: 5, StartSecond: 60, EndSecond: duration - 12, Visual: "结论回收与实际场景", Voiceover: script.Body, Subtitle: "按证据范围理解结论", AssetType: "takeaway", AssetHint: "结论清单、场景演示或章节总结", Transition: "稳定推进", Purpose: "帮助观众应用"},
+			{Index: 5, StartSecond: 60, EndSecond: duration - 12, Visual: "结论回收与实际场景", Voiceover: takeawayVoiceover, Subtitle: takeawaySubtitle, AssetType: "takeaway", AssetHint: "结论清单、场景演示或章节总结", Transition: "稳定推进", Purpose: "帮助观众应用"},
 			{Index: 6, StartSecond: duration - 12, EndSecond: duration, Visual: "评论区讨论入口", Voiceover: script.CallToAction, Subtitle: script.CallToAction, AssetType: "discussion_cta", AssetHint: "评论提示、资料补充或关注引导", Transition: "收束", Purpose: "邀请理性讨论"},
 		}
 		return domain.Storyboard{ScriptID: script.ID, Shots: shots}

@@ -75,6 +75,35 @@ func TestSelectPublicationAdapterKeepsCapableEgoForConfiguredXHSHandoff(t *testi
 	}
 }
 
+func TestResolveOpenMontageBridgeUsesAbsoluteConfigOrFindsRepoFromNestedCWD(t *testing.T) {
+	root := t.TempDir()
+	bridge := filepath.Join(root, "tools", "openmontage-bridge", "bridge.py")
+	if err := os.MkdirAll(filepath.Dir(bridge), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bridge, []byte("pass\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveOpenMontageBridgePath(bridge); err != nil {
+		t.Fatalf("absolute bridge config rejected: %v", err)
+	}
+	if _, err := resolveOpenMontageBridgePath(filepath.Base(bridge)); err == nil {
+		t.Fatal("relative configured bridge path must be rejected")
+	}
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(filepath.Join(root, "tools")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldCwd) })
+	resolved, err := resolveOpenMontageBridgePath("")
+	if err != nil || resolved != bridge {
+		t.Fatalf("bridge search from nested/non-repo cwd = %q, err=%v; want %q", resolved, err, bridge)
+	}
+}
+
 func TestSelectPublicationAdapterBlocksXHSHandoffWithoutEgo(t *testing.T) {
 	ego, err := egopublisher.New(egopublisher.Config{}, publication.PlatformXiaohongshu)
 	if err != nil {

@@ -68,10 +68,30 @@ type DistributionTarget struct {
 // MediaRequest opts a distribution run into the repository media worker.
 // Keeping this pointer optional preserves the legacy package-only behavior.
 type MediaRequest struct {
-	Enabled      bool    `json:"enabled"`
-	Voice        string  `json:"voice,omitempty"`
-	PlaybackRate float64 `json:"playback_rate,omitempty"`
-	Render       bool    `json:"render,omitempty"`
+	Enabled             bool                `json:"enabled"`
+	Voice               string              `json:"voice,omitempty"`
+	PlaybackRate        float64             `json:"playback_rate,omitempty"`
+	Render              bool                `json:"render,omitempty"`
+	OpenMontageRegistry bool                `json:"openmontage_registry,omitempty"`
+	Assets              []MediaAssetRequest `json:"assets,omitempty"`
+	SceneAssets         []SceneAssetRequest `json:"scene_assets,omitempty"`
+	DefaultAssetID      string              `json:"default_asset_id,omitempty"`
+}
+
+type MediaAssetRequest struct {
+	ID     string `json:"id"`
+	Ref    string `json:"ref"`
+	Kind   string `json:"kind"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+type SceneAssetRequest struct {
+	SceneID string `json:"scene_id"`
+	AssetID string `json:"asset_id"`
+}
+
+func (m MediaRequest) HasTaskAssets() bool {
+	return m.Assets != nil || m.SceneAssets != nil || m.DefaultAssetID != ""
 }
 
 // DistributionRequest is the public request contract for an asynchronous run.

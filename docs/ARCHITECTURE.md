@@ -4,7 +4,7 @@
 
 核心目标：用 Go + tRPC-Agent-Go 实现一个可观测、可扩展、可人工审核的 Agent workflow，把 OpenMontage 式端到端视频生产能力垂直化到商品种草、工具测评、知识内容和矩阵批量测试场景。
 
-当前实现状态：代码中的 `internal/agentkit` 是确定性的 GraphAgent、Tool、Artifact 占位适配层，并非真实的 tRPC-Agent-Go runtime；真实 tRPC-Agent-Go 仍属于后续接入计划。当前可运行主链路由 Go `net/http`、Engine、确定性 workflow、本地工具、导出器、可选渲染器和既有发布适配器组成；新的异步 Distribution Run 由 SQLite ledger 驱动。
+当前实现状态：主业务 workflow 仍以确定性节点执行，不是自主规划或自主决策 Agent。`internal/mediaworker` 已真实接入 tRPC-Agent-Go GraphAgent/Runner，用于受约束的 OpenMontage 渲染执行；每个 attempt 创建新的 tRPC session，checkpoint 记录图内执行状态，重启后的恢复和重试由 runstore 驱动，不承诺从图中某个节点续跑。这不代表整个视频生产 workflow 已迁移为 tRPC，也不代表模型自主规划已实现。当前可运行链路由 Go `net/http`、Engine、确定性 workflow、本地工具、导出器、可选渲染器和既有发布适配器组成；新的异步 Distribution Run 由 SQLite ledger 驱动。
 
 ## 架构原则
 
@@ -40,7 +40,7 @@ Research -> Evidence / Contradiction / Historical Context -> Judgment
 
 `ContentAtom` 是 Judgment 层和内容分发层之间的正式 Go 契约，`DistributionRequest` 是异步入口，`DistributionRun` 是持久化执行记录。它使 Research/Judgment 的内部结构与现有视频生产、渲染、平台发布能力解耦；Offering、Research Report、Member Brief、Manual Content 或 Campaign 也可以先转换为 ContentAtom，再复用分发链路。
 
-当前边界是刻意不完整的：Offering 输入已能通过兼容路径生成确定性发布包；Research atom 在没有模型执行器时会阻塞；Media Worker 和 publication adapter 已由 Go Run 接线，但只有运行时配置完整时才会执行。因此 `package_ready` 只代表发布包就绪，`media_ready` 才代表媒体产物已登记，二者都不代表已经投稿；Analytics 仍未实现。
+当前边界是刻意不完整的：Offering 输入仍通过兼容路径生成确定性发布包；Research 需要 ResearchTopic 显式提供 `SourceURLs`，并配置可用的文本 gateway 才能形成证据结果，基于关键词自动发现来源尚未实现。Media Worker 和 publication adapter 已由 Go Run 接线，但只有运行时配置完整时才会执行。因此 `package_ready` 只代表发布包就绪，`media_ready` 才代表媒体产物已登记，二者都不代表已经投稿。Analytics 的持久化、API、调度和能力查询已存在；平台 metrics 当前仅提供 Douyin 实际 provider，使用仍需有效配置与凭证，小红书和 Bilibili 注册为 `UnavailableProvider`，视频号 metrics 尚未接入。其余平台不可视为已具备指标采集能力。新 publication 事务入口支持抖音、小红书和 Bilibili，视频号尚未接入该入口。
 
 正式架构决策见 [`docs/adr/0001-content-atom-boundary.md`](adr/0001-content-atom-boundary.md)。
 
@@ -62,16 +62,20 @@ cmd/server/                 # Go 服务入口
 internal/api/               # HTTP API
 internal/domain/            # 视频项目、Offering、脚本、分镜、素材、发布包、发布状态和测试变体
 internal/workflow/          # 视频生产 workflow 状态机和节点接口
-internal/agentkit/          # 当前确定性 agentkit 占位层；真实 tRPC-Agent-Go 为后续规划
+internal/agentkit/          # 确定性业务 workflow 的 agentkit 兼容层；不代表自主规划
+internal/mediaworker/       # 真实 tRPC-Agent-Go GraphAgent 渲染执行适配器
 internal/tools/             # 商品规整、模板、QA、素材和字幕工具
 internal/exporter/          # Markdown / JSON 发布包
 internal/render/            # OpenMontage 可选渲染适配
 internal/publisher/         # 平台发布注册表和官方适配器
+internal/pipeline/          # Research/Judgment 父任务、ContentAtom 分发子 Run 协调和持久化
 internal/distribution/      # 异步 Distribution facade 和单进程 worker
-internal/runstore/          # SQLite runs / events / artifacts ledger
+internal/runstore/          # SQLite runs / events / artifacts ledger、lease/fencing 和 RetryOnce 子库回执
 internal/research/          # source reader、证据采集和 OpenAI-compatible gateway adapter
 internal/publication/       # 持久化授权、发布、未知态和 reconcile 事务核心
 internal/egopublisher/      # Ego Lite draft/publish/reconcile adapter with durable references
+internal/analytics/         # 审核/指标快照、同步任务、调度和查询
+internal/platforminsights/  # Douyin metrics provider；小红书/Bilibili 为 UnavailableProvider
 internal/store/             # 旧项目 / batch API 的内存存储
 web/                        # Vue 3 + Vite 运行和发布看板，不随 API 镜像部署
 docs/                       # 架构和技术规划
@@ -246,7 +250,11 @@ ProductAnalyzer
 - metadata.json
 - video.mp4，后续阶段生成
 
-## tRPC-Agent-Go 接入设计
+## tRPC-Agent-Go 接入现状与设计
+
+`internal/mediaworker` 中的 OpenMontage 渲染适配器已使用 tRPC-Agent-Go GraphAgent、Runner 和 SQLite checkpoint 执行有界的生产/渲染步骤。它承接明确输入与受限任务，不负责自主生成选题、研究或规划整个生产流程。`internal/agentkit` 与主 `ProductSeedVideoWorkflow` 仍以确定性执行为主；下列映射描述的是演进设计，不应当作全部已交付能力。
+
+当前每个 attempt 使用新的 tRPC session。SQLite checkpoint 保存图内执行记录；持久化 Run 状态、重启恢复和重试决策由 `internal/runstore` 驱动，不承诺跨 attempt 从某个 Graph 节点继续执行。
 
 ### 阶段 1：兼容式 workflow 接口
 
@@ -334,7 +342,7 @@ product/link/materials
 - OpenMontage 偏单条生产，本项目强调批量变体和测试回流。
 - OpenMontage 可大量使用云端生成，本项目优先本地化和低成本。
 
-Docker 边界：Docker 镜像只保证 API 和无渲染的确定性 workflow 可运行，不包含 OpenMontage、Node.js、Python、FFmpeg 等完整渲染依赖；渲染增强仍需在宿主机单独安装和配置。
+Docker 边界：当前 Dockerfile 构建并运行 Go API 服务，提供持久化数据卷和健康检查；它没有打包 Web 控制台，也没有闭合 OpenMontage、Python/Node 运行时、FFmpeg/ffprobe、TTS 模型与素材输入等生产渲染依赖。因此这是 API-only 容器，不是包含控制台和媒体生产依赖的全容器闭环。渲染能力仍需按部署环境单独安装、挂载并配置。
 
 ## API 分层
 

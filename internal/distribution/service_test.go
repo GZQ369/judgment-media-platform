@@ -22,6 +22,24 @@ type fakeMediaWorker struct {
 	blocker bool
 }
 
+type retryOnceMediaWorker struct {
+	base  fakeMediaWorker
+	calls int
+}
+
+func (w *retryOnceMediaWorker) Validate(ctx context.Context, spec mediaworker.ProductionSpec, outputDir string) (mediaworker.Result, error) {
+	return w.base.Validate(ctx, spec, outputDir)
+}
+
+func (w *retryOnceMediaWorker) Run(ctx context.Context, spec mediaworker.ProductionSpec, outputDir string) (mediaworker.Result, error) {
+	w.calls++
+	if w.calls == 1 {
+		blocker := mediaworker.CapabilityBlocker{Capability: "tts", Message: "temporary voice provider failure"}
+		return mediaworker.Result{Blockers: []mediaworker.CapabilityBlocker{blocker}}, &mediaworker.CapabilityBlockerError{Blocker: blocker}
+	}
+	return w.base.Run(ctx, spec, outputDir)
+}
+
 func (f *fakeMediaWorker) Validate(context.Context, mediaworker.ProductionSpec, string) (mediaworker.Result, error) {
 	return mediaworker.Result{Valid: true}, nil
 }
@@ -169,8 +187,19 @@ func TestMediaEnabledRunReachesMediaReadyAndKeepsVideoTruthful(t *testing.T) {
 		t.Fatalf("start media run: created=%t err=%v", created, err)
 	}
 	got := waitForRun(t, service, run.ID, domain.RunStatusMediaReady)
-	if len(got.Artifacts) != 2 {
-		t.Fatalf("want package plus media artifact, got %+v", got.Artifacts)
+	wantArtifacts := map[string]string{run.ID + ":publish_package": "package", run.ID + ":production_spec": "production_spec", run.ID + ":media_voiceover": "voiceover-audio"}
+	if len(got.Artifacts) != len(wantArtifacts) {
+		t.Fatalf("want package, production spec, and audio artifacts, got %+v", got.Artifacts)
+	}
+	for _, artifact := range got.Artifacts {
+		kind, exists := wantArtifacts[artifact.ID]
+		if !exists || artifact.Kind != kind {
+			t.Fatalf("unexpected artifact identity: %+v", artifact)
+		}
+		delete(wantArtifacts, artifact.ID)
+	}
+	if len(wantArtifacts) != 0 {
+		t.Fatalf("missing artifacts: %+v", wantArtifacts)
 	}
 	if fake.spec.Timeline == nil || fake.spec.Timeline.PlaybackRate != 2 || fake.spec.Timeline.InputPlaybackRate != 1 {
 		t.Fatalf("unexpected playback spec: %+v", fake.spec.Timeline)
@@ -194,8 +223,8 @@ func TestMediaEnabledRunReachesMediaReadyAndKeepsVideoTruthful(t *testing.T) {
 		t.Fatalf("media spec must contain a segment: %+v", fake.spec)
 	}
 	for _, artifact := range got.Artifacts {
-		if artifact.Kind == "voiceover-audio" && artifact.Metadata["video_ready"] == true {
-			t.Fatal("audio-only manifest was marked as video ready")
+		if artifact.Kind == "voiceover-audio" && artifact.Metadata["video_ready"] != false {
+			t.Fatal("audio-only manifest must explicitly report video_ready=false")
 		}
 	}
 	events, err := service.Events(context.Background(), run.ID, 0, 100)
@@ -211,6 +240,106 @@ func TestMediaEnabledRunReachesMediaReadyAndKeepsVideoTruthful(t *testing.T) {
 			t.Fatalf("missing %s event: %+v", eventType, events)
 		}
 	}
+}
+
+func TestMediaManifestIDsAreScopedAcrossRuns(t *testing.T) {
+	store := testStore(t)
+	fake := &fakeMediaWorker{}
+	service := NewServiceWithOptions(store, t.TempDir(), Options{MediaWorker: fake, MediaPaths: MediaRuntimePaths{Python: "python3"}})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	var runs []domain.Run
+	for _, key := range []string{"media-run-one", "media-run-two"} {
+		request := offeringRequest(key)
+		request.Media = &domain.MediaRequest{Enabled: true, Voice: "test-voice"}
+		run, created, err := service.StartRun(context.Background(), request)
+		if err != nil || !created {
+			t.Fatalf("start %s: created=%t err=%v", key, created, err)
+		}
+		runs = append(runs, waitForRun(t, service, run.ID, domain.RunStatusMediaReady))
+	}
+	for _, run := range runs {
+		found := false
+		for _, artifact := range run.Artifacts {
+			if artifact.Metadata["manifest_artifact_id"] == "media_voiceover" {
+				found = true
+				if artifact.ID != run.ID+":media_voiceover" {
+					t.Fatalf("ledger artifact ID is not run scoped: %+v", artifact)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("run %s lost its media manifest artifact: %+v", run.ID, run.Artifacts)
+		}
+	}
+}
+
+func TestRetryReplacesRunPackageArtifactWithCurrentDiskSHA(t *testing.T) {
+	store := testStore(t)
+	worker := &retryOnceMediaWorker{}
+	service := NewServiceWithOptions(store, t.TempDir(), Options{MediaWorker: worker, MediaPaths: MediaRuntimePaths{Python: "python3"}})
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	request := offeringRequest("package-retry-current-hash")
+	request.Media = &domain.MediaRequest{Enabled: true, Voice: "test-voice"}
+	run, created, err := service.StartRun(context.Background(), request)
+	if err != nil || !created {
+		t.Fatalf("start run: created=%t err=%v", created, err)
+	}
+	first := waitForRun(t, service, run.ID, domain.RunStatusBlocked)
+	var firstPackage domain.Artifact
+	for _, artifact := range first.Artifacts {
+		if artifact.Kind == "package" {
+			firstPackage = artifact
+		}
+	}
+	if firstPackage.ID != run.ID+":publish_package" {
+		t.Fatalf("package ledger ID is not stable/run scoped: %+v", firstPackage)
+	}
+	if attempt, ok := firstPackage.Metadata["attempt"].(float64); !ok || attempt != 0 {
+		t.Fatalf("first package attempt metadata = %#v, want 0", firstPackage.Metadata["attempt"])
+	}
+	if _, err := service.Retry(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	second := waitForRun(t, service, run.ID, domain.RunStatusMediaReady)
+	var packages []domain.Artifact
+	for _, artifact := range second.Artifacts {
+		if artifact.Kind == "package" {
+			packages = append(packages, artifact)
+		}
+	}
+	if len(packages) != 1 {
+		t.Fatalf("retry must leave one current package artifact, got %+v", packages)
+	}
+	packageBytes, err := os.ReadFile(packages[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSHA := sha256.Sum256(packageBytes)
+	if fmt.Sprintf("%x", currentSHA) != packages[0].SHA256 {
+		t.Fatalf("package ledger SHA %s does not match current disk content %x", packages[0].SHA256, currentSHA)
+	}
+	if packages[0].ID != run.ID+":publish_package" {
+		t.Fatalf("retried package ID changed: %+v", packages[0])
+	}
+	if attempt, ok := packages[0].Metadata["attempt"].(float64); !ok || attempt != 1 {
+		t.Fatalf("retried package attempt metadata = %#v, want 1", packages[0].Metadata["attempt"])
+	}
+	for _, artifact := range second.Artifacts {
+		if artifact.Metadata["manifest_artifact_id"] != "media_voiceover" {
+			continue
+		}
+		if attempt, ok := artifact.Metadata["attempt"].(float64); !ok || attempt != 1 {
+			t.Fatalf("retried media artifact attempt metadata = %#v, want 1", artifact.Metadata["attempt"])
+		}
+		return
+	}
+	t.Fatal("retried manifest artifact missing")
 }
 
 func TestRenderRequiresRemotionCWD(t *testing.T) {
@@ -242,6 +371,10 @@ func TestBuildProductionSpecUsesTimelineFor2xOnly(t *testing.T) {
 	spec := buildProductionSpec("run", project, domain.MediaRequest{Render: true}, t.TempDir(), MediaRuntimePaths{Python: "python3", Remotion: "node.exe", RemotionCLI: "remotion-cli.js", RemotionCWD: "remotion"})
 	if spec.Timeline == nil || spec.Timeline.PlaybackRate != 2 || spec.Timeline.InputPlaybackRate != 1 {
 		t.Fatalf("unexpected 2x timeline: %+v", spec.Timeline)
+	}
+	openMontageSpec := buildProductionSpec("run-local-render", project, domain.MediaRequest{Render: true, OpenMontageRegistry: true}, t.TempDir(), MediaRuntimePaths{})
+	if openMontageSpec.Timeline.PlaybackRate != 2 {
+		t.Fatalf("registry render must preserve requested default 2x playback rate: %+v", openMontageSpec.Timeline)
 	}
 	if spec.Voice == nil || spec.Voice.Default["rate"] != "+0%" || spec.Voice.Profiles["hook"]["rate"] != "+0%" || spec.Voice.Profiles["normal"]["rate"] != "+0%" {
 		t.Fatalf("voice rate must stay neutral: %+v", spec.Voice)

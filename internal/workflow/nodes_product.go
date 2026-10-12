@@ -70,8 +70,12 @@ func (AnglePlannerNode) Run(_ context.Context, state *WorkflowState) error {
 		if state.Project.Platform == domain.PlatformDouyin {
 			prefix = "3秒看懂"
 		}
+		problemHook := fmt.Sprintf("还在被%s困扰？%s怎么解决。", pain, title)
+		if state.Offering.DeliveryMode == "content_atom" {
+			problemHook = tools.FirstNonEmpty(state.Offering.Problems, problemHook)
+		}
 		state.Angles = []domain.ContentAngle{
-			{ID: "problem_solution", Name: "问题解决", Hook: fmt.Sprintf("还在被%s困扰？%s怎么解决。", pain, title), Description: "从真实问题进入，展示解决路径。"},
+			{ID: "problem_solution", Name: "问题解决", Hook: problemHook, Description: "从真实问题进入，展示解决路径。"},
 			{ID: "result_demo", Name: "结果演示", Hook: fmt.Sprintf("%s，%s能做到什么。", prefix, title), Description: "用可验证结果说明价值。"},
 			{ID: "workflow", Name: "执行过程", Hook: fmt.Sprintf("把问题交给%s后，会经历哪几步？", title), Description: "公开流程、交付和边界。"},
 			{ID: "fit_check", Name: "适用判断", Hook: fmt.Sprintf("%s适不适合你，先确认这3点。", title), Description: "明确适合与不适合的人群。"},

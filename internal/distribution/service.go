@@ -40,14 +40,15 @@ const (
 
 // Service owns asynchronous run execution independently of HTTP request contexts.
 type Service struct {
-	store          *runstore.Store
-	dataDir        string
-	mediaWorker    mediaworker.Worker
-	mediaPaths     MediaRuntimePaths
-	queue          chan string
-	owner          string
-	executeRun     func(context.Context, domain.Run, runstore.Lease) error
-	reaperInterval time.Duration
+	store               *runstore.Store
+	dataDir             string
+	mediaWorker         mediaworker.Worker
+	openMontageRegistry mediaworker.Worker
+	mediaPaths          MediaRuntimePaths
+	queue               chan string
+	owner               string
+	executeRun          func(context.Context, domain.Run, runstore.Lease) error
+	reaperInterval      time.Duration
 
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
@@ -74,9 +75,10 @@ type MediaRuntimePaths struct {
 
 // Options supplies optional media execution dependencies.
 type Options struct {
-	MediaWorker    mediaworker.Worker
-	MediaPaths     MediaRuntimePaths
-	ReaperInterval time.Duration
+	MediaWorker         mediaworker.Worker
+	OpenMontageRegistry mediaworker.Worker
+	MediaPaths          MediaRuntimePaths
+	ReaperInterval      time.Duration
 }
 
 // NewService creates a durable distribution facade. It does not start a worker.
@@ -107,14 +109,15 @@ func NewServiceWithOptions(store *runstore.Store, dataDir string, options Option
 		interval = defaultLeaseReaperInterval
 	}
 	service := &Service{
-		store:          store,
-		dataDir:        filepath.Clean(dataDir),
-		mediaWorker:    options.MediaWorker,
-		mediaPaths:     options.MediaPaths,
-		queue:          make(chan string, 256),
-		owner:          fmt.Sprintf("distribution-%d-%s", os.Getpid(), uuid.NewString()),
-		cancels:        map[string]context.CancelFunc{},
-		reaperInterval: interval,
+		store:               store,
+		dataDir:             filepath.Clean(dataDir),
+		mediaWorker:         options.MediaWorker,
+		openMontageRegistry: options.OpenMontageRegistry,
+		mediaPaths:          options.MediaPaths,
+		queue:               make(chan string, 256),
+		owner:               fmt.Sprintf("distribution-%d-%s", os.Getpid(), uuid.NewString()),
+		cancels:             map[string]context.CancelFunc{},
+		reaperInterval:      interval,
 	}
 	service.executeRun = service.execute
 	return service
@@ -478,28 +481,64 @@ func (s *Service) execute(ctx context.Context, run domain.Run, lease runstore.Le
 	if err != nil {
 		return err
 	}
-	artifact := domain.Artifact{RunID: run.ID, Kind: "package", Path: path, SHA256: digest, Metadata: map[string]any{"media": "not_connected", "publish": "not_connected", "project_id": project.ID}}
+	artifact := domain.Artifact{ID: run.ID + ":publish_package", RunID: run.ID, Kind: "package", Path: path, SHA256: digest, Metadata: map[string]any{"manifest_artifact_id": "publish_package", "attempt": run.Attempt, "media": "not_connected", "publish": "not_connected", "project_id": project.ID}}
 	if err := s.store.AddArtifactFenced(ctx, artifact, lease); err != nil {
 		return err
 	}
 	if request.Media == nil || !request.Media.Enabled {
 		return s.store.UpdateRunFenced(ctx, run.ID, lease, domain.RunStatusPackageReady, "package_ready", nil, nil, map[string]any{"media": "not_connected", "publish": "not_connected", "artifact_path": path})
 	}
-	if s.mediaWorker == nil {
+	worker := s.mediaWorker
+	if request.Media.OpenMontageRegistry {
+		worker = s.openMontageRegistry
+	}
+	if worker == nil {
 		block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "media_worker", Message: "media generation was requested but no media worker is configured", Retryable: true}
 		return s.store.UpdateRunFenced(ctx, run.ID, lease, domain.RunStatusBlocked, "capability_block", block, nil, map[string]any{"capability": block.Capability})
 	}
-	if request.Media.Render && strings.TrimSpace(s.mediaPaths.RemotionCWD) == "" {
+	if request.Media.HasTaskAssets() {
+		if err := mediaworker.RequireTaskAssetWorker(worker); err != nil {
+			return s.handleMediaError(ctx, run.ID, lease, err)
+		}
+	}
+	if request.Media.OpenMontageRegistry && request.Media.Voice != "" {
+		return s.handleMediaError(ctx, run.ID, lease, &mediaworker.CapabilityBlockerError{Blocker: mediaworker.CapabilityBlocker{Capability: "voice_selection", Message: "OpenMontage uses the configured Piper model and cannot execute media.voice."}})
+	}
+	if request.Media.Render && !request.Media.OpenMontageRegistry && strings.TrimSpace(s.mediaPaths.RemotionCWD) == "" {
 		block := &domain.CapabilityBlock{Code: "CAPABILITY_UNAVAILABLE", Capability: "remotion", Message: "rendering was requested but MEDIA_WORKER_REMOTION_CWD is not configured", Retryable: true}
 		return s.store.UpdateRunFenced(ctx, run.ID, lease, domain.RunStatusBlocked, "capability_block", block, nil, map[string]any{"capability": block.Capability})
 	}
 
 	mediaDir := filepath.Join(s.dataDir, "runs", run.ID, "media")
 	spec := buildProductionSpec(run.ID, project, *request.Media, mediaDir, s.mediaPaths)
+	if err := bindProductionSpecAssets(s.dataDir, filepath.Dir(mediaDir), *request.Media, &spec); err != nil {
+		return fmt.Errorf("bind media assets: %w", err)
+	}
+	specPath, err := mediaworker.PersistProductionSpec(filepath.Dir(mediaDir), spec)
+	if err != nil {
+		return err
+	}
+	inputArtifacts := []struct{ id, kind, path string }{{"production_spec", "production_spec", specPath}}
+	if request.Media.HasTaskAssets() {
+		inputArtifacts = append(inputArtifacts, struct{ id, kind, path string }{"input_assets", "input_asset_manifest", mediaworker.AssetSnapshotManifestPath(filepath.Dir(mediaDir))})
+	}
+	for _, input := range inputArtifacts {
+		digest, err := fileSHA256(input.path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(input.path)
+		if err != nil {
+			return err
+		}
+		if err := s.store.AddArtifactFenced(ctx, domain.Artifact{ID: run.ID + ":" + input.id, RunID: run.ID, Kind: input.kind, Path: input.path, SHA256: digest, Metadata: map[string]any{"attempt": run.Attempt, "bytes": info.Size(), "media_type": "application/json"}}, lease); err != nil {
+			return err
+		}
+	}
 	if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.validating", "media_validating", map[string]any{"output_dir": mediaDir}); err != nil {
 		return err
 	}
-	validation, err := s.mediaWorker.Validate(ctx, spec, mediaDir)
+	validation, err := worker.Validate(ctx, spec, mediaDir)
 	if err != nil || len(validation.Blockers) > 0 {
 		if err == nil && len(validation.Blockers) > 0 {
 			err = &mediaworker.CapabilityBlockerError{Blocker: validation.Blockers[0], ExitCode: 0}
@@ -509,7 +548,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, lease runstore.Le
 	if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.started", "media_started", map[string]any{"job_id": spec.JobID, "output_dir": mediaDir}); err != nil {
 		return err
 	}
-	result, err := s.mediaWorker.Run(ctx, spec, mediaDir)
+	result, err := worker.Run(ctx, spec, mediaDir)
 	if err != nil || len(result.Blockers) > 0 {
 		if err == nil && len(result.Blockers) > 0 {
 			err = &mediaworker.CapabilityBlockerError{Blocker: result.Blockers[0], ExitCode: 0}
@@ -519,37 +558,60 @@ func (s *Service) execute(ctx context.Context, run domain.Run, lease runstore.Le
 	if result.Manifest == nil {
 		return fmt.Errorf("media worker returned no artifact manifest")
 	}
+	if request.Media.OpenMontageRegistry && request.Media.Render {
+		if err := validateProductionRender(ctx, result.Manifest, result.ArtifactManifestPath, mediaDir, s.mediaPaths.FFprobe); err != nil {
+			return fmt.Errorf("production render acceptance failed: %w", err)
+		}
+	}
 	videoReady := false
 	for _, item := range result.Manifest.Artifacts {
 		artifactPath := item.Path
 		if !filepath.IsAbs(artifactPath) {
 			artifactPath = filepath.Join(mediaDir, artifactPath)
 		}
-		data, err := os.ReadFile(artifactPath)
+		info, err := os.Stat(artifactPath)
 		if err != nil {
 			return err
 		}
-		digest := sha256.Sum256(data)
-		actualSHA := hex.EncodeToString(digest[:])
+		if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxProductionArtifactBytes {
+			return fmt.Errorf("media artifact %s is not a non-empty regular file within the 2 GiB limit", item.ID)
+		}
+		actualSHA, err := fileSHA256(artifactPath)
+		if err != nil {
+			return err
+		}
 		videoArtifact := isRenderedVideoArtifact(item)
 		if videoArtifact {
 			videoReady = true
 		}
+		ledgerID := run.ID + ":" + item.ID
 		artifact := domain.Artifact{
-			ID: item.ID, RunID: run.ID, Kind: item.Kind, Path: artifactPath, SHA256: actualSHA,
-			Metadata: map[string]any{"relative_path": item.RelativePath, "bytes": len(data), "media_type": item.MediaType, "manifest_sha256": item.SHA256, "video_ready": videoArtifact},
+			ID: ledgerID, RunID: run.ID, Kind: item.Kind, Path: artifactPath, SHA256: actualSHA,
+			Metadata: map[string]any{"manifest_artifact_id": item.ID, "attempt": run.Attempt, "relative_path": item.RelativePath, "bytes": info.Size(), "media_type": item.MediaType, "manifest_sha256": item.SHA256, "video_ready": videoArtifact, "duration_seconds": item.DurationSeconds, "width": item.Width, "height": item.Height, "sample_rate": item.SampleRate, "channels": item.Channels},
 		}
 		if err := s.store.AddArtifactFenced(ctx, artifact, lease); err != nil {
 			return err
 		}
-		if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.artifact", "media_artifact", map[string]any{"artifact_id": item.ID, "kind": item.Kind, "path": artifactPath, "sha256": actualSHA}); err != nil {
+		if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.artifact", "media_artifact", map[string]any{"artifact_id": ledgerID, "manifest_artifact_id": item.ID, "kind": item.Kind, "path": artifactPath, "sha256": actualSHA}); err != nil {
 			return err
 		}
 	}
-	if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.ready", "media_ready", map[string]any{"artifact_count": len(result.Manifest.Artifacts), "video_ready": videoReady}); err != nil {
+	if request.Media.OpenMontageRegistry && request.Media.Render && !videoReady {
+		return fmt.Errorf("production render acceptance failed: manifest has no rendered-video artifact")
+	}
+	metadata := map[string]any{"media": "ready", "video_ready": videoReady, "artifact_manifest": result.ArtifactManifestPath}
+	readyData := map[string]any{"artifact_count": len(result.Manifest.Artifacts), "video_ready": videoReady}
+	if request.Media.OpenMontageRegistry {
+		readyData["narration_generated"] = true
+		readyData["renderer"] = "openmontage_registry"
+		metadata["renderer"] = "openmontage_registry"
+		metadata["production_mode"] = "asset_driven"
+		metadata["narration_generated"] = true
+	}
+	if err := s.store.AppendEventFenced(ctx, run.ID, lease, "media.ready", "media_ready", readyData); err != nil {
 		return err
 	}
-	return s.store.UpdateRunFenced(ctx, run.ID, lease, domain.RunStatusMediaReady, "media_ready", nil, nil, map[string]any{"media": "ready", "video_ready": videoReady, "artifact_manifest": result.ArtifactManifestPath})
+	return s.store.UpdateRunFenced(ctx, run.ID, lease, domain.RunStatusMediaReady, "media_ready", nil, nil, metadata)
 }
 
 // isRenderedVideoArtifact recognizes only the manifest's reserved rendered
@@ -613,7 +675,43 @@ func buildProductionSpec(runID string, project domain.VideoProject, request doma
 		text := firstText(project.Offering.Description, project.Offering.Name, project.Name)
 		spec.Segments = append(spec.Segments, mediaworker.SegmentSpec{ID: "segment-1", Text: text, Profile: "hook", CaptionLines: []string{text}})
 	}
+	if request.HasTaskAssets() {
+		spec.Assets, _ = productionAssetRequest(request)
+		if len(spec.Scenes) == 0 {
+			spec.Scenes = []mediaworker.SceneSpec{{ID: "scene-1", SegmentIDs: []string{spec.Segments[0].ID}}}
+		}
+	}
 	return spec
+}
+
+func productionAssetRequest(request domain.MediaRequest) ([]mediaworker.AssetSpec, []mediaworker.SceneAssetBinding) {
+	assets := make([]mediaworker.AssetSpec, 0, len(request.Assets))
+	for _, a := range request.Assets {
+		assets = append(assets, mediaworker.AssetSpec{ID: a.ID, Ref: a.Ref, Kind: a.Kind, SHA256: a.SHA256})
+	}
+	bindings := make([]mediaworker.SceneAssetBinding, 0, len(request.SceneAssets))
+	for _, b := range request.SceneAssets {
+		bindings = append(bindings, mediaworker.SceneAssetBinding{SceneID: b.SceneID, AssetID: b.AssetID})
+	}
+	return assets, bindings
+}
+
+func bindProductionSpecAssets(dataDir, runDir string, request domain.MediaRequest, spec *mediaworker.ProductionSpec) error {
+	if !request.HasTaskAssets() {
+		return nil
+	}
+	assets, bindings := productionAssetRequest(request)
+	if !request.Enabled || !request.Render {
+		return fmt.Errorf("task assets require media.enabled and media.render")
+	}
+	if err := mediaworker.ValidateAssetRequest(assets, bindings, request.DefaultAssetID); err != nil {
+		return err
+	}
+	spec.Assets = assets
+	if err := mediaworker.BindSceneAssets(spec, bindings, request.DefaultAssetID); err != nil {
+		return err
+	}
+	return mediaworker.SnapshotAssets(dataDir, runDir, spec)
 }
 
 func firstScriptVoiceover(scripts []domain.Script) string {
@@ -651,6 +749,15 @@ func (s *Service) writePackage(runID string, project domain.VideoProject) (strin
 }
 
 func normalizeRequest(request domain.DistributionRequest) (domain.DistributionRequest, error) {
+	if request.Media != nil && request.Media.HasTaskAssets() {
+		if !request.Media.Enabled || !request.Media.Render {
+			return domain.DistributionRequest{}, fmt.Errorf("%w: task assets require media.enabled and media.render", ErrInvalidRequest)
+		}
+		assets, bindings := productionAssetRequest(*request.Media)
+		if err := mediaworker.ValidateAssetRequest(assets, bindings, request.Media.DefaultAssetID); err != nil {
+			return domain.DistributionRequest{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
+	}
 	if request.Atom != nil && request.Offering != nil {
 		return domain.DistributionRequest{}, fmt.Errorf("%w: exactly one of atom or offering is required", ErrInvalidRequest)
 	}

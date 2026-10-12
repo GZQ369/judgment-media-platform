@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -207,8 +208,27 @@ func openRuntime(cfg config.Config) (*serviceRuntime, error) {
 			Timeout:    cfg.MediaWorkerTimeout,
 		}
 	}
+	var openMontageRegistry mediaworker.Worker
+	if os.Getenv("OPENMONTAGE_RENDER_PYTHON") != "" && os.Getenv("OPENMONTAGE_ROOT") != "" {
+		bridgePath, err := resolveOpenMontageBridgePath(os.Getenv("OPENMONTAGE_RENDER_BRIDGE"))
+		if err != nil {
+			return nil, err
+		}
+		openMontageRegistry = mediaworker.OpenMontageRenderAdapter{
+			Python:          os.Getenv("OPENMONTAGE_RENDER_PYTHON"),
+			Bridge:          bridgePath,
+			OpenMontageRoot: os.Getenv("OPENMONTAGE_ROOT"),
+			SourcePath:      os.Getenv("OPENMONTAGE_RENDER_SOURCE"),
+			FFprobe:         cfg.MediaWorkerFFprobe,
+			DataRoot:        cfg.DataDir,
+			NodeBinDir:      os.Getenv("OPENMONTAGE_NODE_BIN"),
+			TTSModel:        os.Getenv("OPENMONTAGE_PIPER_MODEL"),
+			Timeout:         cfg.MediaWorkerTimeout,
+		}
+	}
 	runtime.distribution = distribution.NewServiceWithOptions(ledger, cfg.DataDir, distribution.Options{
-		MediaWorker: worker,
+		MediaWorker:         worker,
+		OpenMontageRegistry: openMontageRegistry,
 		MediaPaths: distribution.MediaRuntimePaths{
 			Python: cfg.MediaWorkerPython,
 			FFmpeg: cfg.MediaWorkerFFmpeg, FFprobe: cfg.MediaWorkerFFprobe,
@@ -233,6 +253,46 @@ func openRuntime(cfg config.Config) (*serviceRuntime, error) {
 	}
 	runtime.startAnalyticsPoller(cfg.AnalyticsPollEnabled, cfg.AnalyticsPollTick, runtime.analytics.RunScheduledOnce)
 	return runtime, nil
+}
+
+func resolveOpenMontageBridgePath(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		if !filepath.IsAbs(configured) {
+			return "", fmt.Errorf("OPENMONTAGE_RENDER_BRIDGE must be an absolute path")
+		}
+		info, err := os.Stat(configured)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("OPENMONTAGE_RENDER_BRIDGE is not a readable regular file")
+		}
+		return filepath.Clean(configured), nil
+	}
+	cwd, _ := os.Getwd()
+	executable, _ := os.Executable()
+	roots := []string{cwd}
+	if executable != "" {
+		roots = append(roots, filepath.Dir(executable))
+	}
+	seen := map[string]bool{}
+	for _, root := range roots {
+		for depth := 0; depth < 12 && root != ""; depth++ {
+			root = filepath.Clean(root)
+			if seen[root] {
+				break
+			}
+			seen[root] = true
+			candidate := filepath.Join(root, "tools", "openmontage-bridge", "bridge.py")
+			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+				return filepath.Abs(candidate)
+			}
+			parent := filepath.Dir(root)
+			if parent == root {
+				break
+			}
+			root = parent
+		}
+	}
+	return "", fmt.Errorf("OpenMontage bridge not found from startup or executable directories; set OPENMONTAGE_RENDER_BRIDGE to its absolute path")
 }
 
 func newJudgmentRunner(cfg config.Config) (pipeline.JudgmentRunner, error) {
