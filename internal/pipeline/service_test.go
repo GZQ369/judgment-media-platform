@@ -691,14 +691,17 @@ func TestStoreLeaseRecoveryAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := store.AcquireLease(context.Background(), run.ID, "test", time.Millisecond)
+	lease, err := store.AcquireLease(context.Background(), run.ID, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateRunFenced(context.Background(), run.ID, lease, PipelineStatusRunning, "started", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	leaseUntil, leaseUntilNS := leaseTimestamp(time.Now().Add(-time.Minute))
+	if _, err := store.db.Exec(`UPDATE pipeline_leases SET lease_until=?,lease_until_ns=? WHERE run_id=?`, leaseUntil, leaseUntilNS, run.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.RecoverRunning(context.Background()); err != nil {
 		t.Fatal(err)
 	}
